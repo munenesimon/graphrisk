@@ -1,6 +1,8 @@
 import os
 import hashlib
 from neo4j import GraphDatabase
+import neo4j
+print('Driver version:', neo4j.__version__)
 
 uri = os.environ["NEO4J_URI"]
 pwd = os.environ["NEO4J_PASSWORD"]
