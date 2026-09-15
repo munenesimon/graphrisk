@@ -1,17 +1,17 @@
 import os
+import hashlib
 from neo4j import GraphDatabase
 
-uri  = os.environ["NEO4J_URI"]
-user = os.environ["NEO4J_USER"]
-pwd  = os.environ["NEO4J_PASSWORD"]
+uri = os.environ["NEO4J_URI"]
+pwd = os.environ["NEO4J_PASSWORD"]
+usr = os.environ.get("NEO4J_USER", "MISSING")
 
-print("URI repr :", repr(uri))
-print("USER repr:", repr(user))
-import hashlib; print("PWD HASH:", hashlib.sha256(pwd.encode()).hexdigest()[:16]); print("PWD chars:", repr(pwd[0]), "...", repr(pwd[-1]), "len:", len(pwd))
+print("USER len:", len(usr), "hash:", hashlib.sha256(usr.encode()).hexdigest()[:16])
+print("PWD  len:", len(pwd), "hash:", hashlib.sha256(pwd.encode()).hexdigest()[:16])
 
-driver = GraphDatabase.driver(uri, auth=(user, pwd))
+print("Attempting with HARDCODED user 'neo4j'...")
+driver = GraphDatabase.driver(uri, auth=("neo4j", pwd))
 with driver.session() as s:
-    result = s.run("RETURN 1 AS ok").single()["ok"]
-    print("Query result:", result)
+    print("Result:", s.run("RETURN 1 AS ok").single()["ok"])
 driver.close()
-print("CONNECTION OK")
+print("CONNECTION OK with hardcoded user")
