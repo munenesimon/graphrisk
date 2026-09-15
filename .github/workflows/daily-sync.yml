@@ -1,40 +1,21 @@
-name: Daily Vulnerability Sync
-
-on:
-  schedule:
-    - cron: "0 6 * * *"
-  workflow_dispatch:
-
-jobs:
-  sync:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install neo4j requests python-dotenv
-
       - name: Debug connection values
         env:
           NEO4J_URI: ${{ secrets.NEO4J_URI }}
           NEO4J_USER: ${{ secrets.NEO4J_USER }}
           NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
         run: |
-          echo "URI length: ${#NEO4J_URI}"
-          echo "URI starts with: ${NEO4J_URI:0:12}"
-          echo "URI ends with: ${NEO4J_URI: -20}"
-          echo "USER: $NEO4J_USER"
-          echo "PASSWORD length: ${#NEO4J_PASSWORD}"
-
-      - name: Run daily sync
-        working-directory: data-ingestion
-        env:
-          NEO4J_URI: ${{ secrets.NEO4J_URI }}
-          NEO4J_USER: ${{ secrets.NEO4J_USER }}
-          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
-        run: python ingest/09_daily_sync.py
+          python -c "
+          import os
+          from neo4j import GraphDatabase
+          uri = os.environ['NEO4J_URI']
+          user = os.environ['NEO4J_USER']
+          pwd = os.environ['NEO4J_PASSWORD']
+          print('URI repr:', repr(uri))
+          print('USER repr:', repr(user))
+          print('PWD first/last char:', repr(pwd[0]), repr(pwd[-1]))
+          driver = GraphDatabase.driver(uri, auth=(user, pwd))
+          with driver.session() as s:
+              print(s.run('RETURN 1 AS ok').single()['ok'])
+          driver.close()
+          print('CONNECTION OK')
+          "
