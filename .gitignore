@@ -1,0 +1,30 @@
+# Secrets - NEVER commit
+.env
+*.env
+!.env.template
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Flutter
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Test/temp files
+test_write.py
+test_full.py
+test_ds08.py
+check_progress.py
