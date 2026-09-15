@@ -8,6 +8,7 @@ uri = os.environ["NEO4J_URI"]
 pwd = os.environ["NEO4J_PASSWORD"]
 usr = os.environ.get("NEO4J_USER", "MISSING")
 
+print('URI HASH:', hashlib.sha256(uri.encode()).hexdigest()[:16])
 print("USER len:", len(usr), "hash:", hashlib.sha256(usr.encode()).hexdigest()[:16])
 print("PWD  len:", len(pwd), "hash:", hashlib.sha256(pwd.encode()).hexdigest()[:16])
 
