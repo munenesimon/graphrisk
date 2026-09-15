@@ -7,7 +7,7 @@ pwd  = os.environ["NEO4J_PASSWORD"]
 
 print("URI repr :", repr(uri))
 print("USER repr:", repr(user))
-print("PWD chars:", repr(pwd[0]), "...", repr(pwd[-1]), "len:", len(pwd))
+import hashlib; print("PWD HASH:", hashlib.sha256(pwd.encode()).hexdigest()[:16]); print("PWD chars:", repr(pwd[0]), "...", repr(pwd[-1]), "len:", len(pwd))
 
 driver = GraphDatabase.driver(uri, auth=(user, pwd))
 with driver.session() as s:
