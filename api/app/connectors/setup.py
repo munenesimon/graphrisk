@@ -5,9 +5,11 @@ connectors are available before any request tries to use them.
 """
 from .registry import registry
 from .adapters.entra_id import EntraIDAdapter, SUPPORTED_CHECKS as ENTRA_CHECKS
+from .adapters.aws import AWSAdapter, SUPPORTED_CHECKS as AWS_CHECKS
 
 registry.register(EntraIDAdapter, ENTRA_CHECKS)
+registry.register(AWSAdapter, AWS_CHECKS)
 
 # Future connectors register the same way:
-# from .adapters.aws import AWSAdapter, SUPPORTED_CHECKS as AWS_CHECKS
-# registry.register(AWSAdapter, AWS_CHECKS)
+# from .adapters.crowdstrike import CrowdStrikeAdapter, SUPPORTED_CHECKS as CS_CHECKS
+# registry.register(CrowdStrikeAdapter, CS_CHECKS)
