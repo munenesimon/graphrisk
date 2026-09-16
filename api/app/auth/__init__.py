@@ -1,1 +1,1 @@
-# Auth
+# GraphRisk authentication
