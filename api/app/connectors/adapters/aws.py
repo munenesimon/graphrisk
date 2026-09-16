@@ -25,6 +25,7 @@ SUPPORTED_CHECKS = [
 class AWSAdapter(BaseConnector):
     CONNECTOR_ID   = "aws"
     CONNECTOR_NAME = "AWS Security Posture"
+    REQUIRED_CONFIG_KEYS = ["aws_access_key_id", "aws_secret_access_key"]
 
     def authenticate(self) -> None:
         """

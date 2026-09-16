@@ -16,6 +16,24 @@ from .models import CheckResult
 logger = logging.getLogger(__name__)
 
 
+class CheckError:
+    """A single failed check, carrying enough detail for the caller to act on it."""
+    def __init__(self, check_id: str, error_type: str, message: str):
+        self.check_id   = check_id
+        self.error_type = error_type
+        self.message    = message
+
+    def to_dict(self) -> dict:
+        return {
+            "check_id":   self.check_id,
+            "error_type": self.error_type,
+            "message":    self.message,
+        }
+
+    def __repr__(self) -> str:
+        return f"CheckError({self.check_id}: {self.error_type} - {self.message})"
+
+
 class BaseConnector(ABC):
     """
     Abstract base for all GraphRisk connectors.
@@ -30,6 +48,10 @@ class BaseConnector(ABC):
 
     CONNECTOR_ID:   str = "base"    # Override in subclass, e.g. "entra_id"
     CONNECTOR_NAME: str = "Base"    # Override in subclass, e.g. "Microsoft Entra ID"
+
+    # Config keys this connector requires -- override in subclass so
+    # missing-config errors can be reported clearly before any request is made.
+    REQUIRED_CONFIG_KEYS: list[str] = []
 
     def __init__(self, tenant_id: str, config: dict):
         self.tenant_id = tenant_id
@@ -53,6 +75,22 @@ class BaseConnector(ABC):
     def run_check(self, check_id: str) -> CheckResult:
         """Run a specific check and return a CheckResult."""
         raise NotImplementedError
+
+    # ── Config validation ────────────────────────────────────────────────────
+    def validate_config(self) -> Optional[CheckError]:
+        """
+        Check that all REQUIRED_CONFIG_KEYS are present before attempting
+        authentication. Returns a CheckError describing what is missing,
+        or None if config looks complete.
+        """
+        missing = [k for k in self.REQUIRED_CONFIG_KEYS if k not in self.config or not self.config[k]]
+        if missing:
+            return CheckError(
+                check_id="config_validation",
+                error_type="MissingConfig",
+                message=f"Missing required config key(s): {', '.join(missing)}",
+            )
+        return None
 
     # ── Token management ────────────────────────────────────────────────────
     def _ensure_token(self) -> None:
@@ -142,14 +180,34 @@ class BaseConnector(ABC):
         data = r.json()
         self._set_token(data["access_token"], data.get("expires_in", 3600))
 
-    # ── Convenience: run every supported check in one call ──────────────────
-    def run_all_checks(self) -> list[CheckResult]:
-        results = []
+    # ── Run every supported check, surfacing both results and errors ────────
+    def run_all_checks(self) -> tuple[list[CheckResult], list[CheckError]]:
+        """
+        Run every check this adapter supports.
+        Returns (results, errors) -- callers get full visibility into what
+        succeeded and what failed, rather than silently losing failures.
+        Config is validated once up front so a single missing credential
+        does not need to fail N times, once per check.
+        """
+        config_error = self.validate_config()
+        if config_error:
+            return [], [config_error]
+
+        results: list[CheckResult] = []
+        errors:  list[CheckError]  = []
+
         for check_id in self.supported_checks():
             try:
                 result = self.run_check(check_id)
                 results.append(result)
                 logger.info(f"{self.CONNECTOR_ID}/{check_id}: {result.status.value}")
             except Exception as e:
-                logger.error(f"{self.CONNECTOR_ID}/{check_id} failed: {e}")
-        return results
+                error = CheckError(
+                    check_id=check_id,
+                    error_type=type(e).__name__,
+                    message=str(e),
+                )
+                errors.append(error)
+                logger.error(f"{self.CONNECTOR_ID}/{check_id} failed: {error}")
+
+        return results, errors

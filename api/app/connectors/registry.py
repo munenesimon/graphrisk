@@ -1,7 +1,7 @@
 """
 Layer 3 of the universal connector architecture: CheckRegistry.
 
-The orchestration layer — knows which adapter handles which check, routes
+The orchestration layer -- knows which adapter handles which check, routes
 execution, writes CheckResult objects to Neo4j, and triggers blast radius
 propagation. Adding a new vendor means registering its adapter class here;
 nothing else in the system needs to change.
@@ -9,7 +9,7 @@ nothing else in the system needs to change.
 import logging
 from typing import Optional
 
-from .base import BaseConnector
+from .base import BaseConnector, CheckError
 from .models import CheckResult
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ class CheckRegistry:
         """
         Register an adapter and the check_ids it implements.
         `checks` must be passed explicitly since supported_checks() is an
-        instance method and adapters aren't instantiated until first use.
+        instance method and adapters aren\'t instantiated until first use.
         """
         connector_id = adapter_class.CONNECTOR_ID
         self._adapters[connector_id] = adapter_class
@@ -64,25 +64,36 @@ class CheckRegistry:
             raise ValueError(f"No adapter registered for check: {check_id}")
         adapter_class = self._adapters[connector_id]
         adapter = adapter_class(tenant_id=tenant_id, config=config)
+
+        config_error = adapter.validate_config()
+        if config_error:
+            raise ValueError(config_error.message)
+
         result = adapter.run_check(check_id)
         self._write_to_graph(result)
         return result
 
-    def run_all(self, connector_id: str, tenant_id: str, config: dict) -> list[CheckResult]:
-        """Run every check supported by a specific connector."""
+    def run_all(
+        self, connector_id: str, tenant_id: str, config: dict
+    ) -> tuple[list[CheckResult], list[CheckError]]:
+        """
+        Run every check supported by a specific connector.
+        Returns (results, errors) so callers -- including the API layer --
+        can report exactly what succeeded and what failed, and why.
+        """
         adapter_class = self._adapters.get(connector_id)
         if not adapter_class:
             raise ValueError(f"Unknown connector: {connector_id}")
         adapter = adapter_class(tenant_id=tenant_id, config=config)
-        results = adapter.run_all_checks()
+        results, errors = adapter.run_all_checks()
         for result in results:
             self._write_to_graph(result)
-        return results
+        return results, errors
 
     def _write_to_graph(self, result: CheckResult) -> None:
         """Write a CheckResult to Neo4j, updating the Control and cascading to Risks."""
         if not result.control_title:
-            logger.warning(f"CheckResult {result.check_id} has no control_title — skipping graph write")
+            logger.warning(f"CheckResult {result.check_id} has no control_title -- skipping graph write")
             return
         try:
             from app.graph.connection import run_write

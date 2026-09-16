@@ -22,6 +22,7 @@ SUPPORTED_CHECKS = [
 class EntraIDAdapter(BaseConnector):
     CONNECTOR_ID   = "entra_id"
     CONNECTOR_NAME = "Microsoft Entra ID"
+    REQUIRED_CONFIG_KEYS = ["azure_tenant_id", "client_id", "client_secret"]
 
     def authenticate(self) -> None:
         """OAuth 2.0 client credentials via the Microsoft identity platform."""

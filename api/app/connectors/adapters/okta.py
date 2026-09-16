@@ -23,6 +23,7 @@ SUPPORTED_CHECKS = [
 class OktaAdapter(BaseConnector):
     CONNECTOR_ID   = "okta"
     CONNECTOR_NAME = "Okta"
+    REQUIRED_CONFIG_KEYS = ["org_url", "api_token"]
 
     def authenticate(self) -> None:
         """

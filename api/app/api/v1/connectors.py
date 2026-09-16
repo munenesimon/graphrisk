@@ -1,8 +1,8 @@
 """
 API endpoints for the connector framework.
-Includes a mock adapter registered alongside Entra ID so the whole
-pipeline (registry -> adapter -> CheckResult -> Neo4j write) can be
-tested end-to-end without needing real Entra ID / Azure credentials.
+Includes a mock adapter registered alongside the real connectors so the
+whole pipeline (registry -> adapter -> CheckResult -> Neo4j write) can be
+tested end-to-end without needing real vendor credentials.
 """
 from fastapi import APIRouter, HTTPException, Query
 from app.connectors.registry import registry
@@ -21,16 +21,15 @@ class MockAdapter(BaseConnector):
     """
     CONNECTOR_ID   = "mock"
     CONNECTOR_NAME = "Mock Connector (Testing)"
+    REQUIRED_CONFIG_KEYS: list[str] = []   # Mock needs no config at all
 
     def authenticate(self) -> None:
-        # No real auth needed — just satisfy the token cache
         self._set_token("mock-token", expires_in=3600)
 
     def supported_checks(self) -> list[str]:
         return ["mock_mfa_check"]
 
     def run_check(self, check_id: str) -> CheckResult:
-        # Simulate a realistic result without calling any external API
         return CheckResult(
             check_id="mock_mfa_check",
             check_name="Mock MFA Check",
@@ -69,7 +68,6 @@ async def run_check(
     correct adapter automatically based on which connector registered it.
     """
     try:
-        # Mock adapter needs no real config; real adapters need vendor credentials
         config = {} if check_id.startswith("mock_") else {}
         result = registry.run_check(check_id, tenant_id, config)
         return {
@@ -83,7 +81,7 @@ async def run_check(
             "control_title":  result.control_title,
         }
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Check execution failed: {e}")
 
@@ -93,13 +91,20 @@ async def run_connector(
     connector_id: str,
     tenant_id: str = Query(default="demo"),
 ):
-    """Run every check supported by a specific connector."""
+    """
+    Run every check supported by a specific connector.
+    The response always reports both successful results and any errors --
+    a connector with missing credentials returns HTTP 200 with an empty
+    results list and a populated errors list explaining exactly why,
+    rather than a silent empty response or an opaque 500.
+    """
     try:
         config = {} if connector_id == "mock" else {}
-        results = registry.run_all(connector_id, tenant_id, config)
+        results, errors = registry.run_all(connector_id, tenant_id, config)
         return {
             "connector_id": connector_id,
             "checks_run":   len(results),
+            "checks_failed": len(errors),
             "results": [
                 {
                     "check_id": r.check_id,
@@ -109,6 +114,7 @@ async def run_connector(
                 }
                 for r in results
             ],
+            "errors": [e.to_dict() for e in errors],
         }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
