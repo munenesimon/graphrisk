@@ -1,3 +1,5 @@
+**Live demo:** `https://graphrisk-735a0.web.app` · **API:** `https://graphrisk.onrender.com` · **Source:** `https://github.com/munenesimon/graphrisk`
+
 # GraphRisk Intelligence Platform
 
 > **Risk is a network, not a list.**
