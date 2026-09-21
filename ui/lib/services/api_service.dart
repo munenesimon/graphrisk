@@ -20,7 +20,7 @@ class ApiService {
   // that), so embedding it in the built app is an acceptable trade-off
   // for a demo deployment. Swap this for a build-time --dart-define in a
   // production build if the key ever needs to differ per environment.
-  static const _apiKey = 'XzdinqqrWCGAB_fFUQwBuRCyTy9L6N5APD7mMNSE4eA';
+  static const _apiKey = String.fromEnvironment('GRAPHRISK_API_KEY', defaultValue: '');
 
   // In-memory session state. Simple and sufficient for a demo: the token
   // is cleared on app restart, which just means the user logs in again --
