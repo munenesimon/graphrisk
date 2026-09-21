@@ -3,10 +3,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from neo4j_utils import Neo4jClient
 from config import CISA_KEV_URL, NVD_CVE_URL, NVD_API_KEY
 from datetime import datetime, timedelta, timezone
+from fix_vuln_correlation_v3 import correlate_new_vulnerabilities
 
 MERGE_VULN = """
     UNWIND $batch AS row
     MERGE (v:Vulnerability {id: row.cve_id})
+    ON CREATE SET v.first_seen_at = coalesce(row.date_added, row.published_at, row.published_date, toString(datetime()))
     SET v.cve_id=row.cve_id, v.title=row.title, v.description=row.description,
         v.vendor=row.vendor, v.product=row.product, v.cvss_score=row.cvss_score,
         v.severity=row.severity, v.ransomware_use=row.ransomware,
@@ -68,9 +70,15 @@ def main():
     kev = sync_cisa_kev(db)
     time.sleep(2)
     nvd = sync_nvd_delta(db)
+
+    print("\n" + "-" * 55)
+    print("  Correlating newly-seen vulnerabilities against assets...")
+    print("-" * 55)
+    correlations = correlate_new_vulnerabilities(db, tenant_id="demo", lookback_days=30)
+
     db.close()
     print("\n" + "=" * 55)
-    print(f"  KEV synced: {kev}  |  NVD new: {nvd}")
+    print(f"  KEV synced: {kev}  |  NVD new: {nvd}  |  New exposures: {len(correlations)}")
     print("=" * 55)
 
 if __name__ == "__main__": main()

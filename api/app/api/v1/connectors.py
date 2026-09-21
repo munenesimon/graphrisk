@@ -3,16 +3,22 @@ API endpoints for the connector framework.
 Includes a mock adapter registered alongside the real connectors so the
 whole pipeline (registry -> adapter -> CheckResult -> Neo4j write) can be
 tested end-to-end without needing real vendor credentials.
+
+Tenant scoping: the tenant for any check run comes from the verified JWT
+(user.graph_tenant_id), never from a client-supplied query parameter --
+this matches the same fix already applied to dashboard, assets, risks,
+controls, and blast_radius.
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from app.connectors.registry import registry
 from app.connectors.base import BaseConnector
 from app.connectors.models import CheckResult, CheckStatus, CheckCategory
+from app.auth.jwt_auth import get_current_user, CurrentUser
 
 router = APIRouter()
 
 
-# ── Mock adapter — proves the architecture works end-to-end ──────────────────
+# -- Mock adapter -- proves the architecture works end-to-end -----------------
 class MockAdapter(BaseConnector):
     """
     A fake connector with no real API calls, used to verify that the
@@ -21,7 +27,7 @@ class MockAdapter(BaseConnector):
     """
     CONNECTOR_ID   = "mock"
     CONNECTOR_NAME = "Mock Connector (Testing)"
-    REQUIRED_CONFIG_KEYS: list[str] = []   # Mock needs no config at all
+    REQUIRED_CONFIG_KEYS: list[str] = []
 
     def authenticate(self) -> None:
         self._set_token("mock-token", expires_in=3600)
@@ -48,10 +54,10 @@ class MockAdapter(BaseConnector):
 registry.register(MockAdapter, ["mock_mfa_check"])
 
 
-# ── Endpoints ──────────────────────────────────────────────────────────────
+# -- Endpoints ------------------------------------------------------------
 @router.get("/")
-async def list_connectors():
-    """List all registered connectors and their supported checks."""
+async def list_connectors(user: CurrentUser = Depends(get_current_user)):
+    """List all registered connectors and their supported checks. Global, not tenant-scoped."""
     return {
         "connectors": registry.registered_connectors,
         "checks": registry.all_checks,
@@ -61,15 +67,16 @@ async def list_connectors():
 @router.post("/run-check")
 async def run_check(
     check_id: str = Query(description="e.g. mock_mfa_check, mfa_enabled"),
-    tenant_id: str = Query(default="demo"),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
-    Run a single check by check_id. The registry routes it to the
-    correct adapter automatically based on which connector registered it.
+    Run a single check by check_id, scoped to the caller's own tenant
+    (from their verified JWT). The registry routes it to the correct
+    adapter automatically based on which connector registered it.
     """
     try:
         config = {} if check_id.startswith("mock_") else {}
-        result = registry.run_check(check_id, tenant_id, config)
+        result = registry.run_check(check_id, user.graph_tenant_id, config)
         return {
             "check_id":       result.check_id,
             "source":         result.source,
@@ -89,18 +96,18 @@ async def run_check(
 @router.post("/run-connector/{connector_id}")
 async def run_connector(
     connector_id: str,
-    tenant_id: str = Query(default="demo"),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
-    Run every check supported by a specific connector.
-    The response always reports both successful results and any errors --
-    a connector with missing credentials returns HTTP 200 with an empty
-    results list and a populated errors list explaining exactly why,
-    rather than a silent empty response or an opaque 500.
+    Run every check supported by a specific connector, scoped to the
+    caller's own tenant. The response always reports both successful
+    results and any errors -- a connector with missing credentials
+    returns HTTP 200 with an empty results list and a populated errors
+    list explaining exactly why, rather than a silent empty response.
     """
     try:
         config = {} if connector_id == "mock" else {}
-        results, errors = registry.run_all(connector_id, tenant_id, config)
+        results, errors = registry.run_all(connector_id, user.graph_tenant_id, config)
         return {
             "connector_id": connector_id,
             "checks_run":   len(results),

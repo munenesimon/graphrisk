@@ -1,10 +1,11 @@
-
 import 'package:flutter/material.dart';
 import 'constants/colors.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/blast_radius_screen.dart';
 import 'screens/frameworks_screen.dart';
 import 'screens/vulnerability_screen.dart';
+import 'screens/login_screen.dart';
+import 'services/api_service.dart';
 
 void main() {
   runApp(const GraphRiskApp());
@@ -24,13 +25,43 @@ class GraphRiskApp extends StatelessWidget {
         colorScheme: const ColorScheme.dark(primary: kAccent, surface: kSurface),
         fontFamily: 'Inter',
       ),
-      home: const MainShell(),
+      home: const AuthGate(),
     );
   }
 }
 
+/// Shows the login screen until a session exists, then shows the app.
+/// A simple StatefulWidget swap is enough here -- no routing package
+/// needed for a two-state app (logged out / logged in).
+class AuthGate extends StatefulWidget {
+  const AuthGate({super.key});
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  bool _loggedIn = ApiService.isLoggedIn;
+
+  void _handleAuthenticated() => setState(() => _loggedIn = true);
+
+  void _handleLogout() {
+    ApiService.logout();
+    setState(() => _loggedIn = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_loggedIn) {
+      return LoginScreen(onAuthenticated: _handleAuthenticated);
+    }
+    return MainShell(onLogout: _handleLogout);
+  }
+}
+
 class MainShell extends StatefulWidget {
-  const MainShell({super.key});
+  final VoidCallback onLogout;
+  const MainShell({super.key, required this.onLogout});
 
   @override
   State<MainShell> createState() => _MainShellState();
@@ -55,24 +86,43 @@ class _MainShellState extends State<MainShell> {
 
   @override
   Widget build(BuildContext context) {
+    final extended = MediaQuery.of(context).size.width > 900;
     return Scaffold(
       body: Row(children: [
         NavigationRail(
           backgroundColor: kSurface,
           selectedIndex: _selectedIndex,
           onDestinationSelected: (i) => setState(() => _selectedIndex = i),
-          extended: MediaQuery.of(context).size.width > 900,
+          extended: extended,
           leading: Padding(
             padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 8),
             child: Column(children: [
               Container(width: 36, height: 36,
                 decoration: BoxDecoration(color: kAccent, borderRadius: BorderRadius.circular(8)),
                 child: const Icon(Icons.hub, color: Colors.white, size: 20)),
-              if (MediaQuery.of(context).size.width > 900) ...[
+              if (extended) ...[
                 const SizedBox(height: 8),
                 const Text('GraphRisk', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                const SizedBox(height: 2),
+                Text(
+                  ApiService.graphTenantId ?? '',
+                  style: const TextStyle(color: Colors.white38, fontSize: 11),
+                ),
               ],
             ]),
+          ),
+          trailing: Expanded(
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: IconButton(
+                  onPressed: widget.onLogout,
+                  icon: const Icon(Icons.logout, color: Colors.white38, size: 20),
+                  tooltip: 'Log out',
+                ),
+              ),
+            ),
           ),
           selectedIconTheme: const IconThemeData(color: kAccent),
           unselectedIconTheme: const IconThemeData(color: Colors.white38),

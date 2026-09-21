@@ -8,6 +8,7 @@ from tqdm import tqdm
 MERGE_VULN = """
     UNWIND $batch AS row
     MERGE (v:Vulnerability {id: row.cve_id})
+    ON CREATE SET v.first_seen_at = coalesce(row.date_added, row.published_at, row.published_date, toString(datetime()))
     SET v.cve_id=row.cve_id, v.description=row.description,
         v.cvss_score=row.cvss_score, v.severity=row.severity,
         v.published_at=row.published_at, v.source="NVD",

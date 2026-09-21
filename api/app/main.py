@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.graph.connection import get_graph_client, close_graph_client
-from app.api.v1 import assets, risks, controls, frameworks, blast_radius, dashboard, connectors
+from app.api.v1 import assets, risks, controls, frameworks, blast_radius, dashboard, connectors, auth
 from app.connectors import setup as connector_setup  # noqa: F401 -- registers adapters on import
 from app.auth.api_key import verify_api_key
 
@@ -24,16 +24,19 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Tighten to your deployed Flutter URL once known
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# All data-bearing routers require the API key.
-# Root and health stay open so Render's health checks succeed without a key.
 _auth = [Depends(verify_api_key)]
 
+# Auth endpoints are protected by the API key only (not JWT -- you don't have
+# a JWT yet until you register/login). Everything else keeps the API key
+# gate for now; JWT-based tenant scoping is layered onto individual data
+# endpoints incrementally, starting with the ones tested next.
+app.include_router(auth.router,         prefix="/api/v1/auth",       tags=["Auth"],       dependencies=_auth)
 app.include_router(assets.router,       prefix="/api/v1/assets",     tags=["Assets"],     dependencies=_auth)
 app.include_router(risks.router,        prefix="/api/v1/risks",      tags=["Risks"],      dependencies=_auth)
 app.include_router(controls.router,     prefix="/api/v1/controls",   tags=["Controls"],   dependencies=_auth)

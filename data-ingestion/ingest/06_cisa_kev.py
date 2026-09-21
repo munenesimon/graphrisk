@@ -10,6 +10,7 @@ from config import CISA_KEV_URL
 MERGE_VULN = """
     UNWIND $batch AS row
     MERGE (v:Vulnerability {id: row.cve_id})
+    ON CREATE SET v.first_seen_at = coalesce(row.date_added, row.published_at, row.published_date, toString(datetime()))
     SET v.cve_id          = row.cve_id,
         v.title           = row.title,
         v.description     = row.description,

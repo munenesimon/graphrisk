@@ -1,13 +1,19 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends
 from app.graph.connection import run_query
 from app.graph import queries
+from app.auth.jwt_auth import get_current_user, CurrentUser
 
 router = APIRouter()
 
 @router.get("/summary")
-async def dashboard_summary(tenant_id: str = Query(default="demo")):
-    risks    = run_query("MATCH (r:Risk {tenant_id: $t}) RETURN count(r) AS total, sum(CASE WHEN r.status = 'Open' THEN 1 ELSE 0 END) AS open, avg(r.risk_score) AS avg_score", {"t": tenant_id})
-    controls = run_query("MATCH (c:Control {tenant_id: $t}) RETURN count(c) AS total, sum(CASE WHEN c.implementation_status = 'Implemented' THEN 1 ELSE 0 END) AS implemented", {"t": tenant_id})
+async def dashboard_summary(user: CurrentUser = Depends(get_current_user)):
+    """
+    Tenant is taken from the verified JWT (user.graph_tenant_id), NOT from
+    a query parameter. A caller can only ever see their own tenant's data.
+    """
+    tenant_id = user.graph_tenant_id
+    risks    = run_query("MATCH (r:Risk {tenant_id: $t}) RETURN count(r) AS total, sum(CASE WHEN r.status = \'Open\' THEN 1 ELSE 0 END) AS open, avg(r.risk_score) AS avg_score", {"t": tenant_id})
+    controls = run_query("MATCH (c:Control {tenant_id: $t}) RETURN count(c) AS total, sum(CASE WHEN c.implementation_status = \'Implemented\' THEN 1 ELSE 0 END) AS implemented", {"t": tenant_id})
     assets   = run_query("MATCH (a:Asset {tenant_id: $t}) RETURN count(a) AS total", {"t": tenant_id})
     top      = run_query(queries.TOP_RISKS, {"tenant_id": tenant_id})
     vulns    = run_query(queries.VULNERABILITY_STATS, {})
@@ -23,13 +29,19 @@ async def dashboard_summary(tenant_id: str = Query(default="demo")):
     }
 
 @router.get("/graph-stats")
-async def graph_stats():
+async def graph_stats(user: CurrentUser = Depends(get_current_user)):
+    """
+    Not tenant-scoped -- these are global graph statistics (vulnerability
+    counts, framework sizes, etc.) shared across all tenants. Still requires
+    a valid JWT so only authenticated users can query it.
+    """
     nodes = run_query("MATCH (n) RETURN labels(n)[0] AS type, count(n) AS total ORDER BY total DESC", {})
     rels  = run_query("MATCH ()-[r]->() RETURN type(r) AS type, count(r) AS total ORDER BY total DESC", {})
     return {"nodes": nodes, "relationships": rels, "total_nodes": sum(r["total"] for r in nodes), "total_edges": sum(r["total"] for r in rels)}
 
 @router.get("/vulnerability-intel")
-async def vulnerability_intel():
+async def vulnerability_intel(user: CurrentUser = Depends(get_current_user)):
+    """Global threat intelligence -- not tenant-scoped, but still requires a valid JWT."""
     stats = run_query("""
         MATCH (v:Vulnerability)
         WITH v.source AS source, count(v) AS total,
@@ -46,7 +58,12 @@ async def vulnerability_intel():
     return {"vulnerability_sources": stats, "recent_ransomware_kev": recent}
 
 @router.get("/framework-coverage")
-async def framework_coverage(tenant_id: str = Query(default="demo")):
+async def framework_coverage(user: CurrentUser = Depends(get_current_user)):
+    """
+    Tenant is taken from the verified JWT (user.graph_tenant_id), NOT from
+    a query parameter.
+    """
+    tenant_id = user.graph_tenant_id
     result = run_query("""
         MATCH (fc:FrameworkControl)-[:PART_OF]->(f:Framework)
         OPTIONAL MATCH (c:Control {tenant_id: $tenant_id})-[:SATISFIES]->(fc)
