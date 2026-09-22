@@ -28,3 +28,5 @@ test_write.py
 test_full.py
 test_ds08.py
 check_progress.py
+
+login_render.json
