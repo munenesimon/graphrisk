@@ -49,6 +49,6 @@ app.include_router(connectors.router,   prefix="/api/v1/connectors", tags=["Conn
 async def root():
     return {"platform": "GraphRisk Intelligence Platform", "version": "1.0.0", "status": "running", "docs": "/docs"}
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     return {"status": "healthy"}
