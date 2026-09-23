@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from app.config import settings
 from app.graph.connection import get_graph_client, close_graph_client
 from app.api.v1 import assets, risks, controls, frameworks, blast_radius, dashboard, connectors, auth
 from app.connectors import setup as connector_setup  # noqa: F401 -- registers adapters on import
@@ -9,7 +10,7 @@ from app.auth.api_key import verify_api_key
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     get_graph_client()
-    print("GraphRisk API started \u2014 Neo4j connected")
+    print("GraphRisk API started — Neo4j connected")
     print(f"Registered connectors: {connector_setup.registry.registered_connectors}")
     yield
     close_graph_client()
@@ -22,9 +23,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Locked down to the production Firebase Hosting origin. Localhost origins
+# are added only outside production so local `flutter run -d chrome` still
+# works in dev without opening the deployed API up to the whole internet.
+_allowed_origins = ["https://graphrisk-735a0.web.app"]
+if settings.environment != "production":
+    _allowed_origins += ["http://localhost:3000", "http://127.0.0.1:3000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
