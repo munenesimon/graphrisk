@@ -10,6 +10,7 @@ this matches the same fix already applied to dashboard, assets, risks,
 controls, and blast_radius.
 """
 from fastapi import APIRouter, HTTPException, Query, Depends
+from pydantic import BaseModel
 from app.connectors.registry import registry
 from app.connectors.base import BaseConnector
 from app.connectors.models import CheckResult, CheckStatus, CheckCategory
@@ -54,6 +55,24 @@ class MockAdapter(BaseConnector):
 registry.register(MockAdapter, ["mock_mfa_check"])
 
 
+# -- Request body for real connector credentials -------------------------------
+class ConnectorRunRequest(BaseModel):
+    """
+    Per-vendor config (api_url/username/password, tenant_id/client_id/
+    client_secret, etc. -- whatever that adapter's REQUIRED_CONFIG_KEYS
+    lists) for connectors that need real credentials to run.
+
+    Defaults to an empty dict so existing mock-check calls with no body
+    keep working exactly as before -- this used to be the ONLY value ever
+    passed to any connector (see the note below), which meant entra_id,
+    aws, okta, and now wazuh could never actually run against a real
+    vendor through this API at all, only mock. That's fixed here: the
+    caller now supplies real config per-request rather than it being
+    silently hardcoded to {} regardless of which connector was asked for.
+    """
+    config: dict = {}
+
+
 # -- Endpoints ------------------------------------------------------------
 @router.get("/")
 async def list_connectors(user: CurrentUser = Depends(get_current_user)):
@@ -66,17 +85,20 @@ async def list_connectors(user: CurrentUser = Depends(get_current_user)):
 
 @router.post("/run-check")
 async def run_check(
-    check_id: str = Query(description="e.g. mock_mfa_check, mfa_enabled"),
+    check_id: str = Query(description="e.g. mock_mfa_check, wazuh_agent_connectivity"),
+    body: ConnectorRunRequest = ConnectorRunRequest(),
     user: CurrentUser = Depends(get_current_user),
 ):
     """
     Run a single check by check_id, scoped to the caller's own tenant
     (from their verified JWT). The registry routes it to the correct
     adapter automatically based on which connector registered it.
+    Real connectors need their credentials in the request body, e.g.:
+        {"config": {"api_url": "https://your-manager:55000",
+                     "username": "...", "password": "..."}}
     """
     try:
-        config = {} if check_id.startswith("mock_") else {}
-        result = registry.run_check(check_id, user.graph_tenant_id, config)
+        result = registry.run_check(check_id, user.graph_tenant_id, body.config)
         return {
             "check_id":       result.check_id,
             "source":         result.source,
@@ -96,6 +118,7 @@ async def run_check(
 @router.post("/run-connector/{connector_id}")
 async def run_connector(
     connector_id: str,
+    body: ConnectorRunRequest = ConnectorRunRequest(),
     user: CurrentUser = Depends(get_current_user),
 ):
     """
@@ -104,10 +127,11 @@ async def run_connector(
     results and any errors -- a connector with missing credentials
     returns HTTP 200 with an empty results list and a populated errors
     list explaining exactly why, rather than a silent empty response.
+    Real connectors need their credentials in the request body -- see
+    run_check above for the shape.
     """
     try:
-        config = {} if connector_id == "mock" else {}
-        results, errors = registry.run_all(connector_id, user.graph_tenant_id, config)
+        results, errors = registry.run_all(connector_id, user.graph_tenant_id, body.config)
         return {
             "connector_id": connector_id,
             "checks_run":   len(results),
