@@ -38,24 +38,14 @@ async def create_asset(asset: AssetCreate, user: CurrentUser = Depends(get_curre
 
 @router.post("/{asset_id}/link-vulnerability")
 async def link_vulnerability(asset_id: str, cve_id: str = Query(), user: CurrentUser = Depends(get_current_user)):
-    result = run_write("""
-        MATCH (a:Asset {id: $asset_id, tenant_id: $tenant_id})
-        MATCH (v:Vulnerability {cve_id: $cve_id})
-        MERGE (v)-[:EXPOSES]->(a)
-        RETURN a.name AS asset, v.cve_id AS cve_id
-    """, {"asset_id": asset_id, "tenant_id": user.graph_tenant_id, "cve_id": cve_id})
+    result = run_write(queries.LINK_VULNERABILITY_TO_ASSET, {"asset_id": asset_id, "tenant_id": user.graph_tenant_id, "cve_id": cve_id})
     if not result:
         raise HTTPException(status_code=404, detail="Asset or vulnerability not found")
     return {"message": "Vulnerability linked", "data": result[0]}
 
 @router.post("/{asset_id}/link-risk")
 async def link_risk(asset_id: str, risk_id: str = Query(), user: CurrentUser = Depends(get_current_user)):
-    result = run_write("""
-        MATCH (a:Asset {id: $asset_id, tenant_id: $tenant_id})
-        MATCH (r:Risk {id: $risk_id, tenant_id: $tenant_id})
-        MERGE (r)-[:IMPACTS]->(a)
-        RETURN r.title AS risk, a.name AS asset
-    """, {"asset_id": asset_id, "risk_id": risk_id, "tenant_id": user.graph_tenant_id})
+    result = run_write(queries.LINK_RISK_TO_ASSET, {"asset_id": asset_id, "risk_id": risk_id, "tenant_id": user.graph_tenant_id})
     if not result:
         raise HTTPException(status_code=404, detail="Asset or risk not found")
     return {"message": "Risk linked to asset", "data": result[0]}

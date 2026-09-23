@@ -40,13 +40,7 @@ async def create_risk(risk: RiskCreate, user: CurrentUser = Depends(get_current_
 
 @router.post("/{risk_id}/link-control")
 async def link_control(risk_id: str, control_id: str = Query(), effectiveness: float = Query(default=0.8), user: CurrentUser = Depends(get_current_user)):
-    result = run_write("""
-        MATCH (r:Risk {id: $risk_id, tenant_id: $tenant_id})
-        MATCH (c:Control {id: $control_id, tenant_id: $tenant_id})
-        MERGE (c)-[m:MITIGATES]->(r)
-        SET m.effectiveness = $effectiveness
-        RETURN c.title AS control, r.title AS risk
-    """, {"risk_id": risk_id, "control_id": control_id, "effectiveness": effectiveness, "tenant_id": user.graph_tenant_id})
+    result = run_write(queries.LINK_CONTROL_TO_RISK, {"risk_id": risk_id, "control_id": control_id, "effectiveness": effectiveness, "tenant_id": user.graph_tenant_id})
     if not result:
         raise HTTPException(status_code=404, detail="Risk or control not found")
     return {"message": "Control linked to risk", "data": result[0]}

@@ -15,26 +15,6 @@ from .models import CheckResult
 logger = logging.getLogger(__name__)
 
 
-# Neo4j write: update the Control node and cascade risk score recalculation
-WRITE_RESULT = """
-    MATCH (c:Control {title: $control_title, tenant_id: $tenant_id})
-    SET c.implementation_status = CASE $status
-            WHEN "PASS"    THEN "Implemented"
-            WHEN "WARNING" THEN "PartiallyImplemented"
-            WHEN "FAIL"    THEN "NotImplemented"
-            ELSE c.implementation_status
-        END,
-        c.effectiveness_score = $score,
-        c.last_tested_at      = datetime(),
-        c.last_check_source   = $source,
-        c.last_check_detail   = $detail
-    WITH c
-    OPTIONAL MATCH (c)-[:MITIGATES]->(r:Risk)
-    SET r.risk_score = r.likelihood * r.impact * (1.0 - $score)
-    RETURN c.title AS control, count(r) AS risks_updated
-"""
-
-
 class CheckRegistry:
     """
     Central registry mapping check_ids to the adapter class that implements them.
@@ -49,7 +29,7 @@ class CheckRegistry:
         """
         Register an adapter and the check_ids it implements.
         `checks` must be passed explicitly since supported_checks() is an
-        instance method and adapters aren\'t instantiated until first use.
+        instance method and adapters aren't instantiated until first use.
         """
         connector_id = adapter_class.CONNECTOR_ID
         self._adapters[connector_id] = adapter_class
@@ -97,7 +77,8 @@ class CheckRegistry:
             return
         try:
             from app.graph.connection import run_write
-            run_write(WRITE_RESULT, {
+            from graphrisk_core.queries import WRITE_CHECK_RESULT
+            run_write(WRITE_CHECK_RESULT, {
                 **result.to_neo4j_params(),
                 "control_title": result.control_title,
             })
