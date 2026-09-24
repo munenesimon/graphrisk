@@ -28,12 +28,17 @@ def main():
 
     # ── Assets ────────────────────────────────────────────────
     print("\n[1/5] Creating demo assets...")
+    # vendor/product are what the correlation engine (CORRELATE_NEW_ASSET_AGAINST_ALL_VULNERABILITIES
+    # on creation, and the daily sync's CORRELATE_RECENT_VULNERABILITIES) actually match against --
+    # without them an asset just can't pick up any CVE, no matter how relevant. Chosen to be real
+    # vendor/product pairs with genuine CVE history in CISA KEV / NVD, not just plausible-sounding
+    # labels, so correlation has something real to find.
     assets = [
-        {"name": "Microsoft 365",   "asset_type": "CloudService", "criticality": "Critical", "owner": "IT Team",      "environment": "Production"},
-        {"name": "VPN Gateway",     "asset_type": "Server",       "criticality": "High",     "owner": "Network Team", "environment": "Production"},
-        {"name": "Payroll System",  "asset_type": "Application",  "criticality": "Critical", "owner": "Finance Team", "environment": "Production"},
-        {"name": "HR Database",     "asset_type": "Database",     "criticality": "Critical", "owner": "HR Team",      "environment": "Production"},
-        {"name": "Email Gateway",   "asset_type": "Application",  "criticality": "High",     "owner": "IT Team",      "environment": "Production"},
+        {"name": "Microsoft 365",   "asset_type": "CloudService", "criticality": "Critical", "owner": "IT Team",      "environment": "Production", "vendor": "Microsoft", "product": "Office"},
+        {"name": "VPN Gateway",     "asset_type": "Server",       "criticality": "High",     "owner": "Network Team", "environment": "Production", "vendor": "Ivanti",    "product": "Connect Secure"},
+        {"name": "Payroll System",  "asset_type": "Application",  "criticality": "Critical", "owner": "Finance Team", "environment": "Production", "vendor": "Oracle",    "product": "PeopleSoft"},
+        {"name": "HR Database",     "asset_type": "Database",     "criticality": "Critical", "owner": "HR Team",      "environment": "Production", "vendor": "Microsoft", "product": "SQL Server"},
+        {"name": "Email Gateway",   "asset_type": "Application",  "criticality": "High",     "owner": "IT Team",      "environment": "Production", "vendor": "Barracuda", "product": "Email Security Gateway"},
     ]
     asset_ids = {}
     for a in assets:
