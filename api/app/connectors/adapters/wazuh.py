@@ -37,7 +37,7 @@ SUPPORTED_CHECKS = [
 ]
 
 DEFAULT_CONTROL_TITLES = {
-    "wazuh_agent_connectivity": "Endpoint Detection and Response",
+    "wazuh_agent_connectivity": "Endpoint Detection & Response",
     "wazuh_sca_compliance":     "Secure Configuration Baseline",
 }
 
