@@ -180,14 +180,13 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 | Multi-tenancy | ✅ JWT-enforced tenant scoping on every data endpoint (PostgreSQL on Neon free tier) |
 | GitHub Actions daily sync | ✅ Running reliably against Google Cloud Neo4j (18/19 recent runs succeeded) |
 | Connector coverage | ⚠️ 5 connectors vs. 200+ in mature tools |
-| Sync correlation scope | ⚠️ Daily sync correlates new CVEs for the demo tenant only, not yet per-tenant |
+| Sync correlation scope | ℹ️ Daily sync correlates new CVEs against the demo tenant by design — that's the account anyone testing GraphRisk logs into, so it stays populated with live data rather than sitting on months-old seed data. Not yet extended to arbitrary tenants. |
 | Production hardening | ⚠️ e2-micro Neo4j VM is memory-constrained (~1.4s query latency) |
 
 ---
 
 ## Roadmap
 
-- [ ] Per-tenant vulnerability correlation in the daily sync (currently demo-tenant only)
 - [ ] Real vendor credential testing (AWS free tier, Okta developer org)
 - [ ] Wazuh connector live-data validation (pending a self-hosted instance)
 - [ ] CrowdStrike / Qualys connector adapters
