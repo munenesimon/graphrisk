@@ -1,23 +1,75 @@
 """
 GraphRisk — Demo Seed Data
 Creates demo assets, risks, controls and links them together.
-Run from graphrisk-api folder with venv active.
-Usage: python seed_demo.py
+Run from the graphrisk-api folder with venv active: python seed_demo.py
+
+Every route is now gated by a JWT (and optionally a shared X-API-Key) --
+this script logs into the demo account first and attaches the token to
+every request, instead of the old params={"tenant_id": "demo"} shape
+that predates that auth work and no longer does anything.
+
+Config, all via env vars so nothing here is hardcoded to one deployment:
+  GRAPHRISK_BASE_URL  API base, e.g. https://graphrisk.onrender.com/api/v1
+                      (default: http://localhost:8000/api/v1 for local dev)
+  DEMO_EMAIL / DEMO_PASSWORD
+                      Demo account credentials (default: the ones published
+                      in the README -- demo@graphrisk.dev / demopass123)
+  GRAPHRISK_API_KEY   Only needed if the server you're pointing at has one
+                      configured (Render does; local dev usually doesn't --
+                      see app/auth/api_key.py). Left unset, no X-API-Key
+                      header is sent at all.
+
+To reseed the LIVE public demo (not just a local dev DB), run with
+GRAPHRISK_BASE_URL and GRAPHRISK_API_KEY set to the deployed values.
+
+Note: this script always creates new assets/risks/controls -- it doesn't
+check for or clean up ones that already exist. Re-running it against an
+already-seeded tenant will duplicate everything, not update it in place.
 """
+import os
 import requests
 
-BASE   = "http://localhost:8000/api/v1"
-TENANT = "demo"
+BASE          = os.environ.get("GRAPHRISK_BASE_URL", "http://localhost:8000/api/v1")
+DEMO_EMAIL    = os.environ.get("DEMO_EMAIL", "demo@graphrisk.dev")
+DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "demopass123")
+DEMO_TENANT_NAME = os.environ.get("DEMO_TENANT_NAME", "Demo Tenant")
+API_KEY       = os.environ.get("GRAPHRISK_API_KEY")  # optional -- see docstring
+
+_token = None
+
+
+def _headers():
+    h = {}
+    if _token:
+        h["Authorization"] = f"Bearer {_token}"
+    if API_KEY:
+        h["X-API-Key"] = API_KEY
+    return h
+
+
+def authenticate():
+    """Log into the demo account, registering it first if it doesn't exist yet."""
+    global _token
+    r = requests.post(f"{BASE}/auth/login",
+                       json={"email": DEMO_EMAIL, "password": DEMO_PASSWORD},
+                       headers=_headers())
+    if r.status_code == 401:
+        print(f"  No account for {DEMO_EMAIL} yet -- registering...")
+        r = requests.post(f"{BASE}/auth/register", json={
+            "email": DEMO_EMAIL, "password": DEMO_PASSWORD, "tenant_name": DEMO_TENANT_NAME,
+        }, headers=_headers())
+    r.raise_for_status()
+    _token = r.json()["access_token"]
+    print(f"  Authenticated as {DEMO_EMAIL} ({BASE})")
 
 
 def post(path, body=None, params=None):
-    p = {"tenant_id": TENANT}
-    if params:
-        p.update(params)
-    if body:
-        r = requests.post(f"{BASE}{path}", json=body, params=p)
+    if body is not None:
+        r = requests.post(f"{BASE}{path}", json=body, params=params, headers=_headers())
     else:
-        r = requests.post(f"{BASE}{path}", params=p)
+        r = requests.post(f"{BASE}{path}", params=params, headers=_headers())
+    if not r.ok:
+        raise RuntimeError(f"POST {path} failed ({r.status_code}): {r.text}")
     return r.json()
 
 
@@ -25,6 +77,9 @@ def main():
     print("=" * 55)
     print("  GraphRisk — Demo Seed Data")
     print("=" * 55)
+
+    print("\n[0/5] Authenticating...")
+    authenticate()
 
     # ── Assets ────────────────────────────────────────────────
     print("\n[1/5] Creating demo assets...")
@@ -44,7 +99,9 @@ def main():
     for a in assets:
         result = post("/assets/", body=a)
         asset_ids[a["name"]] = result["id"]
-        print(f"  + {a['name']} ({a['criticality']}) -> {result['id'][:8]}...")
+        linked = result.get("vulnerabilities_linked", 0)
+        extra = f", {linked} CVE(s) auto-linked" if linked else ""
+        print(f"  + {a['name']} ({a['criticality']}) -> {result['id'][:8]}...{extra}")
 
     # ── Risks ─────────────────────────────────────────────────
     print("\n[2/5] Creating demo risks...")
@@ -131,21 +188,18 @@ def main():
     print(f"  + {len(fw_links)} framework control links created")
 
     # Link a real CVE to an asset
-    cve_link = requests.post(
-        f"{BASE}/assets/{asset_ids['VPN Gateway']}/link-vulnerability",
-        params={"tenant_id": TENANT, "cve_id": "CVE-2024-21887"}
-    )
-    print(f"  + CVE-2024-21887 linked to VPN Gateway")
+    post(f"/assets/{asset_ids['VPN Gateway']}/link-vulnerability", params={"cve_id": "CVE-2024-21887"})
+    print("  + CVE-2024-21887 linked to VPN Gateway")
 
     # ── Summary ───────────────────────────────────────────────
     print("\n" + "=" * 55)
     print("  Seed Complete")
     print("=" * 55)
     print(f"\n  MFA Control ID: {mfa_id}")
-    print(f"\n  Test blast radius:")
-    print(f"  http://localhost:8000/api/v1/graph/blast-radius/control/{mfa_id}?tenant_id=demo")
+    print(f"\n  Test blast radius (needs the Authorization/X-API-Key headers above):")
+    print(f"  GET {BASE}/graph/blast-radius/control/{mfa_id}")
     print("\n  Test dashboard:")
-    print("  http://localhost:8000/api/v1/dashboard/summary?tenant_id=demo")
+    print(f"  GET {BASE}/dashboard/summary")
     print("=" * 55)
 
 
