@@ -2,15 +2,17 @@ import requests, time, sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from neo4j_utils import Neo4jClient
 from config import CISA_KEV_URL, NVD_CVE_URL, NVD_API_KEY
+from cpe_utils import extract_cpe_pairs
 from datetime import datetime, timedelta, timezone
-from fix_vuln_correlation_v3 import correlate_new_vulnerabilities
+from fix_vuln_correlation_v4 import correlate_new_vulnerabilities
 
 MERGE_VULN = """
     UNWIND $batch AS row
     MERGE (v:Vulnerability {id: row.cve_id})
     ON CREATE SET v.first_seen_at = coalesce(row.date_added, row.published_at, row.published_date, toString(datetime()))
     SET v.cve_id=row.cve_id, v.title=row.title, v.description=row.description,
-        v.vendor=row.vendor, v.product=row.product, v.cvss_score=row.cvss_score,
+        v.vendor=row.vendor, v.product=row.product, v.cpe_pairs=row.cpe_pairs,
+        v.cvss_score=row.cvss_score,
         v.severity=row.severity, v.ransomware_use=row.ransomware,
         v.patch_available=row.patch_available, v.source=row.source,
         v.last_synced_at=row.synced_at
@@ -22,7 +24,7 @@ def sync_cisa_kev(db):
     synced_at = datetime.now(timezone.utc).isoformat()
     batch = [{"cve_id": v.get("cveID",""), "title": v.get("vulnerabilityName",""),
               "description": v.get("shortDescription",""), "vendor": v.get("vendorProject",""),
-              "product": v.get("product",""), "cvss_score": 0.0, "severity": "High",
+              "product": v.get("product",""), "cpe_pairs": [], "cvss_score": 0.0, "severity": "High",
               "ransomware": v.get("knownRansomwareCampaignUse","Unknown"),
               "patch_available": True, "source": "CISA_KEV", "synced_at": synced_at}
              for v in data.get("vulnerabilities",[])]
@@ -54,8 +56,14 @@ def sync_nvd_delta(db):
         cvss = 0.0
         for m in cve.get("metrics",{}).get("cvssMetricV31",[]):
             cvss = m.get("cvssData",{}).get("baseScore",0.0); break
+        # Same fix as ingest/07_nvd_cve.py: NVD gives no plain vendor/product
+        # field, so pull it from the CVE's own CPE match data. Previously
+        # this was hardcoded to "" -- every NVD-sourced CVE synced here had
+        # no vendor/product for the correlation query to match against.
+        vendor, product, cpe_pairs = extract_cpe_pairs(cve)
         batch.append({"cve_id": cve.get("id",""), "title": cve.get("id",""), "description": desc,
-                      "vendor": "", "product": "", "cvss_score": cvss, "severity": "Critical",
+                      "vendor": vendor, "product": product, "cpe_pairs": cpe_pairs, "cvss_score": cvss,
+                      "severity": "Critical",
                       "ransomware": "Unknown", "patch_available": False,
                       "source": "NVD", "synced_at": synced_at})
     db.run_batch(MERGE_VULN, batch)
