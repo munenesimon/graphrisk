@@ -1,3 +1,4 @@
+from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Depends
 from app.graph.connection import run_query
 from app.graph import queries
@@ -34,26 +35,69 @@ def _regulatory_obligations(tenant_id: str, asset_ids: list) -> dict:
     return block
 
 
+def _group_frameworks(row: dict, scope: str):
+    """
+    Splits the frameworks a control supports into:
+      standards          voluntary benchmarks (NIST, CSF, CIS, PCI) -- always shown
+      your_regulations   regulations in the organisation's regulatory profile
+      other_regulations  regulations it isn't subject to -- only with scope="all"
+    Returns (grouped, included_names). included_names drives the flat
+    compliance_gaps list and framework_count, so existing clients (the
+    Flutter blast-radius screen) keep working and follow the chosen scope.
+    """
+    frameworks = row.get("frameworks")
+    if frameworks is None:
+        # graphrisk_core older than this router: only names are available
+        frameworks = [{"id": n, "name": n, "category": "standard", "in_profile": False}
+                      for n in row.get("compliance_gaps") or []]
+    unique = {}
+    for f in frameworks:
+        unique.setdefault(f["id"], f)   # reached both directly and via the crosswalk
+    fws = list(unique.values())
+    standards = [f["name"] for f in fws if f["category"] != "regulation"]
+    yours = [f["name"] for f in fws if f["category"] == "regulation" and f["in_profile"]]
+    other = [f["name"] for f in fws if f["category"] == "regulation" and not f["in_profile"]]
+    grouped = {"standards": standards, "your_regulations": yours}
+    included = standards + yours
+    if scope == "all":
+        grouped["other_regulations"] = other
+        included = included + other
+    return grouped, included
+
+
 @router.get("/blast-radius/control/{control_id}")
-async def blast_radius_control(control_id: str, user: CurrentUser = Depends(get_current_user)):
+async def blast_radius_control(
+    control_id: str,
+    scope: Literal["all", "applicable"] = Query(
+        "all",
+        description="all: every framework this control supports, grouped. "
+                    "applicable: standards plus only the regulations in your regulatory profile.",
+    ),
+    user: CurrentUser = Depends(get_current_user),
+):
     result = run_query(queries.BLAST_RADIUS_CONTROL, {"control_id": control_id, "tenant_id": user.graph_tenant_id})
     if not result or not result[0].get("control_title"):
         raise HTTPException(status_code=404, detail=f"Control {control_id} not found")
     row = result[0]
+    grouped, included = _group_frameworks(row, scope)
+    # Crosswalk requirements are "<FRAMEWORK_NAME> <ref>"; keep only those in scope
+    mapped = [m for m in row.get("mapped_framework_controls") or [] if m.split(" ", 1)[0] in included]
     return {
         "control_id": control_id, "control_title": row["control_title"],
         "control_status": row["control_status"], "effectiveness_score": row["effectiveness_score"],
+        "scope": scope,
         "blast_radius": {
             "exposed_risks": row["exposed_risks"], "affected_assets": row["affected_assets"],
-            "impacted_processes": row["impacted_processes"], "compliance_gaps": row["compliance_gaps"],
+            "impacted_processes": row["impacted_processes"],
+            "compliance_gaps": included,
+            "frameworks": grouped,
             "framework_controls": row["framework_controls"],
             # Requirements in other frameworks (e.g. Kenya DPA) exposed via the
-            # curated crosswalk rather than a direct SATISFIES link. .get() so
-            # this still works if graphrisk_core is older than this router.
-            "mapped_framework_controls": row.get("mapped_framework_controls", []),
+            # curated crosswalk rather than a direct SATISFIES link.
+            "mapped_framework_controls": mapped,
         },
         "regulatory_obligations": _regulatory_obligations(user.graph_tenant_id, row.get("affected_asset_ids") or []),
-        "summary": {"risk_count": row["risk_count"], "asset_count": row["asset_count"], "framework_count": row["framework_count"]}
+        "summary": {"risk_count": row["risk_count"], "asset_count": row["asset_count"], "framework_count": len(included)}
     }
 
 

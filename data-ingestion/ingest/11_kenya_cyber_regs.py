@@ -55,6 +55,7 @@ BANKS = {
     "owner": "Central Bank of Kenya",
     "url": "https://www.centralbank.go.ke/wp-content/uploads/2017/09/GUIDANCE-NOTE-ON-CYBERSECURITY-FOR-THE-BANKING-SECTOR.pdf",
     "license_note": "Public regulatory guidance -- no licensing restriction",
+    "category": "regulation",
 }
 G = "CBK Guidance Note on Cybersecurity 2017"
 BANK_REQS = [
@@ -175,6 +176,7 @@ PSP = {
     "owner": "Central Bank of Kenya",
     "url": "https://www.centralbank.go.ke/wp-content/uploads/2019/07/GuidelinesonCybersecurityforPSPs.pdf",
     "license_note": "Public regulatory guidance -- no licensing restriction",
+    "category": "regulation",
 }
 P = "CBK Guideline on Cybersecurity for PSPs 2019"
 PSP_CONDITION = ("If the incident could have a significant and adverse impact on the PSP's ability to "
@@ -308,6 +310,7 @@ CMCA = {
     "owner": "National Computer and Cybercrimes Coordination Committee (Kenya)",
     "url": "https://new.kenyalaw.org/akn/ke/act/ln/2024/44/eng@2024-02-16",
     "license_note": "Public statute -- no licensing restriction",
+    "category": "regulation",
 }
 R = "Computer Misuse and Cybercrime (CII and Cybercrime Management) Regulations 2024"
 CMCA_REQS = [

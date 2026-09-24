@@ -49,6 +49,7 @@ FRAMEWORK = {
     "owner": "Office of the Data Protection Commissioner (Kenya)",
     "url": ACT_URL,
     "license_note": "Public statute -- no licensing restriction",
+    "category": "regulation",
 }
 
 # (ref, domain, requirement_type, title, graphrisk_summary, legal source,

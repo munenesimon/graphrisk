@@ -31,11 +31,15 @@ NOTIFICATION_TRIGGERS = {
 # Organisation qualifiers a notification duty can be limited to. A duty with
 # no applies_to applies to every organisation subject to the framework.
 QUALIFIERS = {"data_processor", "sips_swips"}
+# "regulation" = law or binding regulatory guidance an organisation may be
+# subject to (shown against its regulatory profile). Frameworks with no
+# category -- NIST, CSF, CIS, PCI DSS -- are treated as voluntary standards.
+CATEGORIES = {"regulation", "standard"}
 
 MERGE_FRAMEWORK = """
     MERGE (f:Framework {id: $id})
     SET f.name = $name, f.version = $version, f.owner = $owner,
-        f.url = $url, f.license_note = $license_note
+        f.url = $url, f.license_note = $license_note, f.category = $category
 """
 
 MERGE_CONTROLS = """
@@ -94,6 +98,8 @@ COUNT = """
 def validate(framework, requirements, mappings):
     """Returns a list of problems; empty means the curated data is consistent."""
     problems = []
+    if framework.get("category", "regulation") not in CATEGORIES:
+        problems.append(f"unknown framework category {framework.get('category')!r}")
     refs = [r["ref"] for r in requirements]
     dupes = sorted({r for r in refs if refs.count(r) > 1})
     if dupes:
@@ -176,7 +182,9 @@ def load(db, framework, requirements, mappings):
     else:
         print(f"  All {len(targets)} NIST mapping targets present")
 
-    db.run(MERGE_FRAMEWORK, {k: framework[k] for k in ("id", "name", "version", "owner", "url", "license_note")})
+    params = {k: framework[k] for k in ("id", "name", "version", "owner", "url", "license_note")}
+    params["category"] = framework.get("category", "regulation")
+    db.run(MERGE_FRAMEWORK, params)
     with db.driver.session() as s:
         s.run(MERGE_CONTROLS, {"batch": build_rows(framework, requirements), "fwid": fwid})
 
