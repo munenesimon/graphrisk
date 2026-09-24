@@ -7,7 +7,12 @@ import '../widgets/risk_row.dart';
 import '../widgets/section_header.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  /// Called with the NavigationRail index to switch to when a drillable
+  /// stat card is tapped. Index mapping mirrors MainShell's _screens list:
+  /// 0 = Dashboard, 1 = Blast Radius, 2 = Frameworks, 3 = Vulnerabilities.
+  final void Function(int index)? onNavigate;
+
+  const DashboardScreen({super.key, this.onNavigate});
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
@@ -25,8 +30,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       final s = await ApiService.getDashboardSummary();
       final g = await ApiService.getGraphStats();
+      if (!mounted) return;
       setState(() { _summary = s; _graphStats = g; _loading = false; });
     } catch (e) {
+      if (!mounted) return;
+      // A session-expiry redirect is already in flight (ApiService's
+      // onSessionExpired hook swaps this whole screen out for the login
+      // screen) -- no need to also flash a dying error here.
+      if (e is AuthException) return;
       setState(() { _error = e.toString(); _loading = false; });
     }
   }
@@ -76,9 +87,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             final w = (constraints.maxWidth - (cols - 1) * 16) / cols;
             return Wrap(spacing: 16, runSpacing: 16, children: [
               SizedBox(width: w, child: StatCard(label: 'Open Risks', value: s.openRisks.toString(),
-                  subtitle: 'Avg score: ' + s.avgScore.toString(), color: kRed, icon: Icons.warning_amber_rounded)),
+                  subtitle: 'Avg score: ' + s.avgScore.toString(), color: kRed, icon: Icons.warning_amber_rounded,
+                  onTap: widget.onNavigate == null ? null : () => widget.onNavigate!(1))),
               SizedBox(width: w, child: StatCard(label: 'Controls', value: s.implementedControls.toString() + '/' + s.totalControls.toString(),
-                  subtitle: controlPct + '% implemented', color: kGreen, icon: Icons.shield_outlined)),
+                  subtitle: controlPct + '% implemented', color: kGreen, icon: Icons.shield_outlined,
+                  onTap: widget.onNavigate == null ? null : () => widget.onNavigate!(2))),
               SizedBox(width: w, child: StatCard(label: 'Assets', value: s.totalAssets.toString(),
                   subtitle: 'Monitored', color: kAccent, icon: Icons.devices_outlined)),
               SizedBox(width: w, child: StatCard(label: 'Graph Nodes', value: g.totalNodes.toString(),

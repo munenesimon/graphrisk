@@ -20,8 +20,12 @@ class _FrameworksScreenState extends State<FrameworksScreen> {
     try {
       final f = await ApiService.getFrameworks();
       final c = await ApiService.getFrameworkCoverage();
+      if (!mounted) return;
       setState(() { _frameworks = f; _coverage = c; _loading = false; });
     } catch (e) {
+      if (!mounted) return;
+      // Session-expiry redirect is already in flight -- see dashboard_screen.dart.
+      if (e is AuthException) return;
       setState(() { _loading = false; });
     }
   }

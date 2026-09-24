@@ -6,7 +6,16 @@ import '../services/api_service.dart';
 /// [onAuthenticated] so the caller (main.dart) can swap in the dashboard.
 class LoginScreen extends StatefulWidget {
   final VoidCallback onAuthenticated;
-  const LoginScreen({super.key, required this.onAuthenticated});
+  /// True when this screen is being shown because the user's session
+  /// expired mid-use (a 401 from an authenticated call), rather than a
+  /// normal cold-start login. Shows a one-time explanatory banner instead
+  /// of leaving the redirect unexplained.
+  final bool sessionExpired;
+  const LoginScreen({
+    super.key,
+    required this.onAuthenticated,
+    this.sessionExpired = false,
+  });
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -21,6 +30,14 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isRegisterMode = false;
   bool _isLoading = false;
   String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.sessionExpired) {
+      _errorMessage = 'Your session expired. Please log in again.';
+    }
+  }
 
   @override
   void dispose() {
