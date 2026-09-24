@@ -34,7 +34,7 @@ curl -X POST https://graphrisk.onrender.com/api/v1/auth/login \
 
 **2. Run a blast radius query** (what happens if MFA fails?):
 ```bash
-curl https://graphrisk.onrender.com/api/v1/graph/blast-radius/control/2333d7a2-4a12-4211-ae18-bc82ff502950 \
+curl https://graphrisk.onrender.com/api/v1/graph/blast-radius/control/2b813abc-d89a-4186-b11e-b20a4216e15b \
   -H "X-API-Key: <key>" \
   -H "Authorization: Bearer <token>"
 ```
