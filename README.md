@@ -14,7 +14,7 @@ GraphRisk is a graph-based cybersecurity risk intelligence platform that models 
 
 Most GRC tools store risk data and report on it. GraphRisk traverses it.
 
-When you mark a control as "Partially Implemented," GraphRisk instantly recalculates every downstream risk score, surfaces every compliance gap across every linked framework, and shows you exactly which assets are now exposed — across NIST 800-53, NIST CSF, CIS Controls, and PCI DSS simultaneously.
+When you mark a control as "Partially Implemented," GraphRisk instantly recalculates every downstream risk score, surfaces every compliance gap across every linked framework, and shows you exactly which assets are now exposed — across NIST 800-53, NIST CSF, CIS Controls, PCI DSS and Kenya's Data Protection Act simultaneously.
 
 One change. Automatic cascade. No spreadsheet.
 
@@ -39,7 +39,7 @@ curl https://graphrisk.onrender.com/api/v1/graph/blast-radius/control/2333d7a2-4
   -H "Authorization: Bearer <token>"
 ```
 
-**Expected response:** 2 exposed risks, 4 affected assets, 4 framework controls across 2 standards — calculated live from the graph.
+**Expected response:** 2 exposed risks, 4 affected assets, 4 framework controls across 3 standards — including a Kenya Data Protection Act requirement reached through the NIST crosswalk — calculated live from the graph.
 
 ---
 
@@ -48,6 +48,7 @@ curl https://graphrisk.onrender.com/api/v1/graph/blast-radius/control/2333d7a2-4
 ### Graph Intelligence Engine
 - **Blast radius traversal** — given a failing control, instantly surfaces every affected asset, risk, and compliance obligation via Cypher graph traversal. Verified with real math: `risk_score = likelihood × impact × (1 - control_effectiveness)`.
 - **Evidence origami** — one evidence artifact (e.g. an MFA enrollment report) automatically satisfies multiple framework requirements across different standards simultaneously, because it maps to a `Control` node already linked to `FrameworkControl` nodes via `SATISFIES` edges.
+- **Regulatory crosswalk** — Kenya Data Protection Act 2019 requirements are linked to the NIST 800-53 and CSF controls they correspond to via `MAPS_TO` edges, so controls a tenant already has count toward Kenyan obligations with no extra mapping work. Coverage is reported as direct vs. via-crosswalk, and only controls that are actually in place (Implemented or Partially Implemented) count.
 - **Vendor breach cascade** — given a third-party vendor breach, the graph traverses `PROVIDES → Asset → Risk` edges to surface every activated risk and flag any under-implemented mitigating controls.
 - **Automatic vulnerability correlation** — bidirectional: daily threat intelligence sync auto-links newly-published CVEs to matching assets by vendor/product name (with structured CPE-based matching, not free-text search), and newly-onboarded assets are immediately checked against the full vulnerability history at creation time. Either direction cascades risk score updates without manual triage.
 
@@ -76,6 +77,7 @@ Real-world, authoritative data — not synthetic demo content.
 | NIST CSF 2.0 | 106 controls | Static |
 | CIS Controls v8.1 | 171 controls + safeguards | Static |
 | PCI DSS v4.0.1 | 12 requirements | Static |
+| Kenya Data Protection Act 2019 (+ 2021 Regulations) | 23 requirements, 57 NIST crosswalk mappings | Static (GraphRisk-curated) |
 | AI-generated summaries | 1,999 nodes | Generated once via Claude |
 
 ### Multi-Tenant Authentication
@@ -181,12 +183,15 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 | GitHub Actions daily sync | ✅ Running reliably against Google Cloud Neo4j (18/19 recent runs succeeded) |
 | Connector coverage | ⚠️ 5 connectors vs. 200+ in mature tools |
 | Sync correlation scope | ℹ️ Daily sync correlates new CVEs against the demo tenant by design — that's the account anyone testing GraphRisk logs into, so it stays populated with live data rather than sitting on months-old seed data. Not yet extended to arbitrary tenants. |
+| Kenya DPA crosswalk | ⚠️ GraphRisk-curated mappings, not an official crosswalk — coverage means mapped controls are in place, not legal compliance (not legal advice). Six items derived from the 2021 Regulations are pending primary-text verification. |
 | Production hardening | ⚠️ e2-micro Neo4j VM is memory-constrained (~1.4s query latency) |
 
 ---
 
 ## Roadmap
 
+- [ ] Central Bank of Kenya cybersecurity guidance (banks and payment service providers) on the same crosswalk
+- [ ] Regulatory notification clocks in impact output (e.g. the 72-hour ODPC breach notice when an asset holding personal data is exposed)
 - [ ] Real vendor credential testing (AWS free tier, Okta developer org)
 - [ ] Wazuh connector live-data validation (pending a self-hosted instance)
 - [ ] CrowdStrike / Qualys connector adapters
@@ -213,7 +218,7 @@ graphrisk/
 │   └── requirements.txt
 ├── data-ingestion/         # Python ingestion scripts (DS-01 through DS-10)
 │   ├── ingest/             # One script per data source
-│   └── fix_vuln_correlation_v3.py  # Vulnerability-to-asset correlation
+│   └── fix_vuln_correlation_v4.py  # Vulnerability-to-asset correlation
 └── ui/                     # Flutter Web frontend
     └── lib/
         ├── screens/        # Dashboard, Blast Radius, Frameworks, Vulnerabilities, Login
