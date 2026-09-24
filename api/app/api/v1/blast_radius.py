@@ -18,6 +18,10 @@ async def blast_radius_control(control_id: str, user: CurrentUser = Depends(get_
             "exposed_risks": row["exposed_risks"], "affected_assets": row["affected_assets"],
             "impacted_processes": row["impacted_processes"], "compliance_gaps": row["compliance_gaps"],
             "framework_controls": row["framework_controls"],
+            # Requirements in other frameworks (e.g. Kenya DPA) exposed via the
+            # curated crosswalk rather than a direct SATISFIES link. .get() so
+            # this still works if graphrisk_core is older than this router.
+            "mapped_framework_controls": row.get("mapped_framework_controls", []),
         },
         "summary": {"risk_count": row["risk_count"], "asset_count": row["asset_count"], "framework_count": row["framework_count"]}
     }
