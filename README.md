@@ -49,7 +49,7 @@ curl https://graphrisk.onrender.com/api/v1/graph/blast-radius/control/2333d7a2-4
 - **Blast radius traversal** — given a failing control, instantly surfaces every affected asset, risk, and compliance obligation via Cypher graph traversal. Verified with real math: `risk_score = likelihood × impact × (1 - control_effectiveness)`.
 - **Evidence origami** — one evidence artifact (e.g. an MFA enrollment report) automatically satisfies multiple framework requirements across different standards simultaneously, because it maps to a `Control` node already linked to `FrameworkControl` nodes via `SATISFIES` edges.
 - **Vendor breach cascade** — given a third-party vendor breach, the graph traverses `PROVIDES → Asset → Risk` edges to surface every activated risk and flag any under-implemented mitigating controls.
-- **Automatic vulnerability correlation** — daily threat intelligence sync auto-links newly-published CVEs to matching assets by vendor/product name, cascading risk score updates without manual triage.
+- **Automatic vulnerability correlation** — bidirectional: daily threat intelligence sync auto-links newly-published CVEs to matching assets by vendor/product name (with structured CPE-based matching, not free-text search), and newly-onboarded assets are immediately checked against the full vulnerability history at creation time. Either direction cascades risk score updates without manual triage.
 
 ### Universal Connector Architecture
 A three-layer adapter pattern (BaseConnector → per-vendor Adapter → CheckRegistry) lets any security tool plug into the graph with minimal new code, regardless of its authentication style.
@@ -60,6 +60,7 @@ A three-layer adapter pattern (BaseConnector → per-vendor Adapter → CheckReg
 | Microsoft Entra ID | OAuth 2.0 client credentials | 5 | Structurally complete |
 | AWS | SDK-managed IAM keys (boto3) | 4 | Offline-verified via moto |
 | Okta | Static API key header | 4 | Offline-verified via responses |
+| Wazuh | HTTP Basic → session JWT (self-hosted SIEM/XDR) | 2 | Structurally complete; pending a live instance |
 
 Adding a new vendor means writing one adapter file (~150 lines) and one registration line. The registry, graph write, and cascade logic never change.
 
@@ -176,7 +177,7 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 | Vendor breach cascade | ✅ Proven with real graph data |
 | Universal connector pattern | ✅ Proven across 3 auth patterns |
 | Vulnerability-to-asset correlation | ✅ Automated, daily |
-| Connector coverage | ⚠️ 4 connectors vs. 200+ in mature tools |
+| Connector coverage | ⚠️ 5 connectors vs. 200+ in mature tools |
 | Flutter Web frontend | ⚠️ Works locally; static hosting pending |
 | Multi-tenancy | ⚠️ JWT enforced; PostgreSQL on free tier |
 | GitHub Actions daily sync | ⚠️ Built; not yet re-tested post-migration |
@@ -189,6 +190,7 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 - [ ] Flutter Web static deployment (Firebase / Netlify)
 - [ ] GitHub Actions daily sync repointed at Google Cloud Neo4j
 - [ ] Real vendor credential testing (AWS free tier, Okta developer org)
+- [ ] Wazuh connector live-data validation (pending a self-hosted instance)
 - [ ] CrowdStrike / Qualys connector adapters
 - [ ] Connector management UI in Flutter
 - [ ] Graph canvas visualization for blast radius
@@ -207,7 +209,7 @@ graphrisk/
 │   │   ├── connectors/     # Universal connector architecture
 │   │   │   ├── base.py     # BaseConnector (transport layer)
 │   │   │   ├── registry.py # CheckRegistry (orchestration)
-│   │   │   └── adapters/   # Entra ID, AWS, Okta
+│   │   │   └── adapters/   # Entra ID, AWS, Okta, Wazuh
 │   │   ├── db/             # SQLAlchemy models + Neon PostgreSQL
 │   │   └── graph/          # Neo4j connection + Cypher queries
 │   └── requirements.txt
