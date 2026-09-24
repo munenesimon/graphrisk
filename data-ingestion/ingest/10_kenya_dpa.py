@@ -7,29 +7,22 @@ machine-readable feed for Kenyan statute. Requirement wording is taken
 from the Act itself (Kenya Law, Act No. 24 of 2019); GraphRisk summaries
 are plain-English paraphrases, not legal text.
 
-Two kinds of data are written:
-
-1. FrameworkControl nodes for each Kenya DPA requirement, PART_OF a new
-   Framework node KE_DPA_2019.
-
-2. MAPS_TO edges from each Kenya requirement to the NIST SP 800-53 Rev5
-   and NIST CSF 2.0 controls it corresponds to. This is what lets
-   existing tenant controls count toward Kenya DPA automatically: a
-   Control that SATISFIES NIST IA-2 also covers any Kenya requirement
-   that MAPS_TO IA-2, with no extra per-tenant linking. The coverage and
-   blast-radius queries in graphrisk_core follow these edges.
-
-   These mappings are GraphRisk's own interpretation -- no official
-   Kenya DPA <-> NIST crosswalk exists that we're aware of. Every edge is
-   tagged source="GraphRisk curated". Coverage through a mapping means
-   "technical controls are in place that map to this requirement", never
-   "compliant". This is not legal advice.
+Writes, via crosswalk_loader.py:
+1. FrameworkControl nodes for each requirement, PART_OF Framework KE_DPA_2019.
+2. MAPS_TO edges to the NIST 800-53 Rev5 / CSF 2.0 controls each one
+   corresponds to, so a tenant Control that SATISFIES NIST IA-2 also covers
+   any Kenya requirement that MAPS_TO IA-2. These mappings are GraphRisk's
+   own interpretation -- no official Kenya DPA <-> NIST crosswalk exists
+   that we're aware of. Coverage through a mapping means "technical
+   controls are in place that map to this requirement", never "compliant".
+   Not legal advice.
+3. Notification metadata on the s.43 breach-notice duties, which drives the
+   regulatory clocks in blast-radius / vulnerability-impact results.
 
 requirement_type:
    technical  -- demonstrable through security controls/telemetry
    process    -- a documented process; mappable to NIST process controls
-   legal      -- needs legal/manual attestation; deliberately NOT mapped,
-                 so it can never show as covered via the crosswalk
+   legal      -- needs legal/manual attestation; deliberately NOT mapped
 
 Rows with needs_verification=True come from the Data Protection (General)
 Regulations 2021, Part V (regs 27-36), sourced from secondary legal
@@ -38,15 +31,25 @@ before citing them externally.
 
 Usage (from the data-ingestion folder, .env pointing at the target graph):
     python ingest/10_kenya_dpa.py
-Safe to re-run: everything is MERGE-based.
+Safe to re-run: MERGE-based, and stale mappings are pruned.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from neo4j_utils import Neo4jClient
+import crosswalk_loader
 
-FRAMEWORK_ID = "KE_DPA_2019"
 ACT_URL = "https://new.kenyalaw.org/akn/ke/act/2019/24/eng@2022-12-31"
 REGS_URL = "https://new.kenyalaw.org/akn/ke/act/ln/2021/263/eng@2022-12-31"
+
+FRAMEWORK = {
+    "id": "KE_DPA_2019",
+    "label": "DS-10: Kenya Data Protection Act 2019",
+    "name": "KENYA_DPA",
+    "version": "2019 (+ General Regulations 2021)",
+    "owner": "Office of the Data Protection Commissioner (Kenya)",
+    "url": ACT_URL,
+    "license_note": "Public statute -- no licensing restriction",
+}
 
 # (ref, domain, requirement_type, title, graphrisk_summary, legal source,
 #  notification_deadline_hours or None, needs_verification)
@@ -186,6 +189,28 @@ REQUIREMENTS = [
      "Data Protection (General) Regulations 2021, Part V", None, True),
 ]
 
+# Breach-notice duties (s.43). The deadline column in REQUIREMENTS above
+# is kept for readability; these entries are what actually drive the clocks,
+# and main() checks the two agree.
+NOTIFICATIONS = {
+    "DPA-43.1": {
+        "deadline_hours": 72,
+        "notify_party": "Office of the Data Protection Commissioner (ODPC)",
+        "trigger": "personal_data_breach",
+        "condition": ("If personal data is accessed or acquired by an unauthorised person and there "
+                      "is a real risk of harm. Affected data subjects must also be told in writing "
+                      "within a reasonably practical period, unless the data was protected by "
+                      "safeguards such as encryption (s.43(6))."),
+    },
+    "DPA-43.3": {
+        "deadline_hours": 48,
+        "notify_party": "The data controller you process the data for",
+        "trigger": "personal_data_breach",
+        "condition": "If you process the affected personal data on behalf of another organisation (as its data processor).",
+        "applies_to": ["data_processor"],
+    },
+}
+
 # (kenya ref, target FrameworkControl id, confidence)
 # Targets are matched by FrameworkControl.id, not control_reference, so they
 # can't collide with CIS/PCI references.
@@ -271,113 +296,24 @@ MAPPINGS = [
     ("DPR-DETECTION", C + "DE.CM-01", "high"),
 ]
 
-MERGE_FRAMEWORK = """
-    MERGE (f:Framework {id: $id})
-    SET f.name = "KENYA_DPA", f.version = "2019 (+ General Regulations 2021)",
-        f.owner = "Office of the Data Protection Commissioner (Kenya)",
-        f.url = $url,
-        f.license_note = "Public statute -- no licensing restriction"
-    RETURN f.id AS id
-"""
 
-MERGE_CONTROLS = """
-    UNWIND $batch AS row
-    MERGE (fc:FrameworkControl {id: row.id})
-    SET fc.control_reference           = row.ref,
-        fc.title                       = row.title,
-        fc.domain                      = row.domain,
-        fc.requirement_type            = row.requirement_type,
-        fc.graphrisk_summary           = row.summary,
-        fc.legal_source                = row.legal_source,
-        fc.notification_deadline_hours = row.deadline,
-        fc.needs_verification          = row.needs_verification,
-        fc.official_url                = row.url
-    WITH fc
-    MATCH (f:Framework {id: $fwid})
-    MERGE (fc)-[:PART_OF]->(f)
-"""
-
-MERGE_MAPPINGS = """
-    UNWIND $batch AS row
-    MATCH (src:FrameworkControl {id: row.src})
-    MATCH (dst:FrameworkControl {id: row.dst})
-    MERGE (src)-[m:MAPS_TO]->(dst)
-    SET m.source = "GraphRisk curated", m.confidence = row.confidence
-"""
-
-FIND_MISSING_TARGETS = """
-    UNWIND $ids AS id
-    OPTIONAL MATCH (fc:FrameworkControl {id: id})
-    WITH id, fc WHERE fc IS NULL
-    RETURN collect(id) AS missing
-"""
-
-
-def ingest():
-    print("=" * 55)
-    print("  DS-10: Kenya Data Protection Act 2019")
-    print("=" * 55)
-
-    ke_id = lambda ref: f"{FRAMEWORK_ID}_{ref}"
-    batch = [{
-        "id": ke_id(ref), "ref": ref, "domain": domain,
-        "requirement_type": rtype, "title": title, "summary": summary,
-        "legal_source": source, "deadline": deadline,
-        "needs_verification": verify,
-        "url": REGS_URL if ref.startswith("DPR-") else ACT_URL,
-    } for ref, domain, rtype, title, summary, source, deadline, verify in REQUIREMENTS]
-
-    known_refs = {r[0] for r in REQUIREMENTS}
-    bad_src = sorted({m[0] for m in MAPPINGS} - known_refs)
-    if bad_src:
-        print(f"  ERROR: mappings reference unknown Kenya refs: {bad_src}")
-        return
-    legal_mapped = sorted({m[0] for m in MAPPINGS} & {r[0] for r in REQUIREMENTS if r[2] == "legal"})
-    if legal_mapped:
-        print(f"  ERROR: 'legal' requirements must not be mapped: {legal_mapped}")
-        return
-
-    db = Neo4jClient()
-
-    print("\n[1/4] Checking NIST mapping targets exist in this graph...")
-    targets = sorted({m[1] for m in MAPPINGS})
-    missing = db.run(FIND_MISSING_TARGETS, {"ids": targets})[0]["missing"]
-    if missing:
-        print(f"  WARNING: {len(missing)} target(s) not found -- those edges will be skipped:")
-        for m in missing:
-            print(f"    - {m}")
-        print("  (Run DS-01 / DS-02 against this graph first if NIST data is missing entirely.)")
-    else:
-        print(f"  All {len(targets)} targets present")
-
-    print("\n[2/4] Creating Framework node...")
-    db.run(MERGE_FRAMEWORK, {"id": FRAMEWORK_ID, "url": ACT_URL})
-
-    print(f"\n[3/4] Loading {len(batch)} requirements...")
-    with db.driver.session() as s:
-        s.run(MERGE_CONTROLS, {"batch": batch, "fwid": FRAMEWORK_ID})
-
-    print(f"\n[4/4] Creating {len(MAPPINGS)} MAPS_TO edges...")
-    edges = [{"src": ke_id(k), "dst": t, "confidence": c} for k, t, c in MAPPINGS]
-    db.run_batch(MERGE_MAPPINGS, edges, batch_size=200)
-
-    counts = db.run("""
-        MATCH (fc:FrameworkControl)-[:PART_OF]->(:Framework {id: $id})
-        OPTIONAL MATCH (fc)-[m:MAPS_TO]->()
-        RETURN count(DISTINCT fc) AS requirements, count(m) AS mappings
-    """, {"id": FRAMEWORK_ID})[0]
-    db.close()
-
-    expected_edges = len(MAPPINGS) - sum(1 for m in MAPPINGS if m[1] in missing)
-    print("\n" + "=" * 55)
-    print("  Kenya DPA Ingestion Complete")
-    print("=" * 55)
-    print(f"  Requirements in graph : {counts['requirements']} (expected {len(batch)})")
-    print(f"  MAPS_TO edges         : {counts['mappings']} (expected {expected_edges})")
-    unmapped = sorted({r[0] for r in REQUIREMENTS} - {m[0] for m in MAPPINGS})
-    print(f"  Attestation-only      : {', '.join(unmapped)}")
-    print("=" * 55)
+def requirements():
+    rows = []
+    for ref, domain, rtype, title, summary, source, deadline, verify in REQUIREMENTS:
+        n = NOTIFICATIONS.get(ref)
+        if (n or {}).get("deadline_hours") != deadline:
+            raise SystemExit(f"{ref}: REQUIREMENTS deadline {deadline} disagrees with NOTIFICATIONS")
+        rows.append({
+            "ref": ref, "domain": domain, "requirement_type": rtype, "title": title,
+            "summary": summary, "legal_source": source, "needs_verification": verify,
+            "url": REGS_URL if ref.startswith("DPR-") else ACT_URL,
+            "notification": n,
+        })
+    return rows
 
 
 if __name__ == "__main__":
-    ingest()
+    db = Neo4jClient()
+    ok = crosswalk_loader.load(db, FRAMEWORK, requirements(), MAPPINGS)
+    db.close()
+    sys.exit(0 if ok else 1)

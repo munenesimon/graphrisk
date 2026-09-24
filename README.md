@@ -14,7 +14,7 @@ GraphRisk is a graph-based cybersecurity risk intelligence platform that models 
 
 Most GRC tools store risk data and report on it. GraphRisk traverses it.
 
-When you mark a control as "Partially Implemented," GraphRisk instantly recalculates every downstream risk score, surfaces every compliance gap across every linked framework, and shows you exactly which assets are now exposed — across NIST 800-53, NIST CSF, CIS Controls, PCI DSS and Kenya's Data Protection Act simultaneously.
+When you mark a control as "Partially Implemented," GraphRisk instantly recalculates every downstream risk score, surfaces every compliance gap across every linked framework, and shows you exactly which assets are now exposed — across NIST 800-53, NIST CSF, CIS Controls, PCI DSS and Kenyan regulation (the Data Protection Act and Central Bank of Kenya cybersecurity guidance) simultaneously — and tells you which regulator notification deadlines would start if it's exploited.
 
 One change. Automatic cascade. No spreadsheet.
 
@@ -39,7 +39,16 @@ curl https://graphrisk.onrender.com/api/v1/graph/blast-radius/control/2333d7a2-4
   -H "Authorization: Bearer <token>"
 ```
 
-**Expected response:** 2 exposed risks, 4 affected assets, 4 framework controls across 3 standards — including a Kenya Data Protection Act requirement reached through the NIST crosswalk — calculated live from the graph.
+**Expected response:** 2 exposed risks, 4 affected assets, 4 framework controls across 4 standards — including Kenya Data Protection Act and CBK requirements reached through the NIST crosswalk — calculated live from the graph. The demo organisation is modelled as a Kenyan commercial bank, so the response also lists the notification clocks that would start if those assets were breached: 24 hours to CBK, 24 hours to the banking-sector SOC, and 72 hours to the Data Commissioner for the three assets holding personal data.
+
+**3. Ask what a real CVE means for this organisation** (CVE-2024-21887, Ivanti Connect Secure — actively exploited):
+```bash
+curl https://graphrisk.onrender.com/api/v1/graph/vulnerability-impact/CVE-2024-21887 \
+  -H "X-API-Key: <key>" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Expected response:** the VPN Gateway is exposed, the risks and controls on it, and two 24-hour clocks (CBK and the banking-sector SOC). There's no 72-hour Data Commissioner clock, because the VPN gateway holds no personal data — the clocks follow what's actually affected.
 
 ---
 
@@ -48,7 +57,8 @@ curl https://graphrisk.onrender.com/api/v1/graph/blast-radius/control/2333d7a2-4
 ### Graph Intelligence Engine
 - **Blast radius traversal** — given a failing control, instantly surfaces every affected asset, risk, and compliance obligation via Cypher graph traversal. Verified with real math: `risk_score = likelihood × impact × (1 - control_effectiveness)`.
 - **Evidence origami** — one evidence artifact (e.g. an MFA enrollment report) automatically satisfies multiple framework requirements across different standards simultaneously, because it maps to a `Control` node already linked to `FrameworkControl` nodes via `SATISFIES` edges.
-- **Regulatory crosswalk** — Kenya Data Protection Act 2019 requirements are linked to the NIST 800-53 and CSF controls they correspond to via `MAPS_TO` edges, so controls a tenant already has count toward Kenyan obligations with no extra mapping work. Coverage is reported as direct vs. via-crosswalk, and only controls that are actually in place (Implemented or Partially Implemented) count.
+- **Regulatory crosswalk** — requirements from the Kenya Data Protection Act 2019, the CBK Guidance Note on Cybersecurity (banks), the CBK Guideline on Cybersecurity for Payment Service Providers and the 2024 Critical Information Infrastructure Regulations are linked to the NIST 800-53 and CSF controls they correspond to via `MAPS_TO` edges, so controls a tenant already has count toward Kenyan obligations with no extra mapping work. Coverage is reported as direct vs. via-crosswalk, and only controls that are actually in place (Implemented or Partially Implemented) count.
+- **Regulatory notification clocks** — each organisation declares which frameworks it's subject to and which assets hold personal data. Blast-radius and vulnerability-impact results then list the notification duties that would apply if the exposure became a breach: who to notify, the deadline (2, 24, 48 or 72 hours), the legal source, and which affected assets trigger it. A Kenyan bank can face three separate clocks from one incident; GraphRisk shows all of them, and only the ones that actually apply.
 - **Vendor breach cascade** — given a third-party vendor breach, the graph traverses `PROVIDES → Asset → Risk` edges to surface every activated risk and flag any under-implemented mitigating controls.
 - **Automatic vulnerability correlation** — bidirectional: daily threat intelligence sync auto-links newly-published CVEs to matching assets by vendor/product name (with structured CPE-based matching, not free-text search), and newly-onboarded assets are immediately checked against the full vulnerability history at creation time. Either direction cascades risk score updates without manual triage.
 
@@ -78,6 +88,9 @@ Real-world, authoritative data — not synthetic demo content.
 | CIS Controls v8.1 | 171 controls + safeguards | Static |
 | PCI DSS v4.0.1 | 12 requirements | Static |
 | Kenya Data Protection Act 2019 (+ 2021 Regulations) | 23 requirements, 57 NIST crosswalk mappings | Static (GraphRisk-curated) |
+| CBK Guidance Note on Cybersecurity (banks, 2017) | 19 requirements, 48 NIST crosswalk mappings | Static (GraphRisk-curated) |
+| CBK Guideline on Cybersecurity for PSPs (2019) | 21 requirements, 50 NIST crosswalk mappings | Static (GraphRisk-curated) |
+| CMCA Critical Information Infrastructure Regulations 2024 | 3 requirements, 7 NIST crosswalk mappings | Static (GraphRisk-curated) |
 | AI-generated summaries | 1,999 nodes | Generated once via Claude |
 
 ### Multi-Tenant Authentication
@@ -163,6 +176,8 @@ python ingest/04_mitre_attack.py
 python ingest/05_attack_mappings.py
 python ingest/06_cisa_kev.py
 python ingest/07_nvd_cve.py
+python ingest/10_kenya_dpa.py         # Kenya DPA + NIST crosswalk
+python ingest/11_kenya_cyber_regs.py  # CBK banks/PSPs + CMCA CII regulations
 ```
 
 ---
@@ -183,15 +198,15 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 | GitHub Actions daily sync | ✅ Running reliably against Google Cloud Neo4j (18/19 recent runs succeeded) |
 | Connector coverage | ⚠️ 5 connectors vs. 200+ in mature tools |
 | Sync correlation scope | ℹ️ Daily sync correlates new CVEs against the demo tenant by design — that's the account anyone testing GraphRisk logs into, so it stays populated with live data rather than sitting on months-old seed data. Not yet extended to arbitrary tenants. |
-| Kenya DPA crosswalk | ⚠️ GraphRisk-curated mappings, not an official crosswalk — coverage means mapped controls are in place, not legal compliance (not legal advice). Six items derived from the 2021 Regulations are pending primary-text verification. |
+| Kenyan regulatory crosswalk | ⚠️ GraphRisk-curated mappings, not an official crosswalk — coverage means mapped controls are in place, not legal compliance (not legal advice). Six items derived from the Data Protection (General) Regulations 2021 are pending primary-text verification. |
+| Regulatory clocks | ⚠️ Driven by a self-declared regulatory profile and per-asset personal-data flags. Deadlines run from becoming aware of a breach, and whether an incident is "significant" enough to report is a human judgement GraphRisk doesn't make — it shows the duty and its condition. API-only for now; not yet in the Flutter UI. |
 | Production hardening | ⚠️ e2-micro Neo4j VM is memory-constrained (~1.4s query latency) |
 
 ---
 
 ## Roadmap
 
-- [ ] Central Bank of Kenya cybersecurity guidance (banks and payment service providers) on the same crosswalk
-- [ ] Regulatory notification clocks in impact output (e.g. the 72-hour ODPC breach notice when an asset holding personal data is exposed)
+- [ ] Regulatory profile, personal-data flags and notification clocks in the Flutter UI
 - [ ] Real vendor credential testing (AWS free tier, Okta developer org)
 - [ ] Wazuh connector live-data validation (pending a self-hosted instance)
 - [ ] CrowdStrike / Qualys connector adapters
@@ -216,8 +231,9 @@ graphrisk/
 │   │   ├── db/             # SQLAlchemy models + Neon PostgreSQL
 │   │   └── graph/          # Neo4j connection + Cypher queries
 │   └── requirements.txt
-├── data-ingestion/         # Python ingestion scripts (DS-01 through DS-10)
+├── data-ingestion/         # Python ingestion scripts (DS-01 through DS-11)
 │   ├── ingest/             # One script per data source
+│   ├── crosswalk_loader.py         # Shared loader for regulatory frameworks on the NIST crosswalk
 │   └── fix_vuln_correlation_v4.py  # Vulnerability-to-asset correlation
 └── ui/                     # Flutter Web frontend
     └── lib/

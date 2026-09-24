@@ -21,6 +21,13 @@ class AssetCreate(BaseModel):
     # wildcard match (see the query's own comments in graphrisk_core).
     vendor: Optional[str] = None
     product: Optional[str] = None
+    # Drives data-protection regulatory clocks: a breach-notice duty like the
+    # Kenya DPA's 72-hour ODPC notice only applies to assets holding personal data.
+    holds_personal_data: bool = False
+
+
+class AssetDataClassification(BaseModel):
+    holds_personal_data: bool
 
 @router.get("/")
 async def list_assets(user: CurrentUser = Depends(get_current_user)):
@@ -41,6 +48,7 @@ async def create_asset(asset: AssetCreate, user: CurrentUser = Depends(get_curre
         "id": asset_id, "name": asset.name, "asset_type": asset.asset_type,
         "criticality": asset.criticality, "owner": asset.owner,
         "vendor": asset.vendor, "product": asset.product,
+        "holds_personal_data": asset.holds_personal_data,
         "environment": asset.environment, "tenant_id": user.graph_tenant_id,
     })
     # One-time correlation against the FULL vulnerability history (not
@@ -58,6 +66,16 @@ async def create_asset(asset: AssetCreate, user: CurrentUser = Depends(get_curre
         "vulnerabilities_linked": len(exposures),
         "risks_updated": len(cascade),
     }
+
+@router.patch("/{asset_id}/data-classification")
+async def update_data_classification(asset_id: str, body: AssetDataClassification, user: CurrentUser = Depends(get_current_user)):
+    result = run_write(queries.UPDATE_ASSET_DATA_CLASSIFICATION, {
+        "asset_id": asset_id, "tenant_id": user.graph_tenant_id,
+        "holds_personal_data": body.holds_personal_data,
+    })
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Asset {asset_id} not found")
+    return {"message": "Asset data classification updated", **result[0]}
 
 @router.post("/{asset_id}/link-vulnerability")
 async def link_vulnerability(asset_id: str, cve_id: str = Query(), user: CurrentUser = Depends(get_current_user)):

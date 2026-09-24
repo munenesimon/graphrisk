@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.config import settings
 from app.graph.connection import get_graph_client, close_graph_client
-from app.api.v1 import assets, risks, controls, frameworks, blast_radius, dashboard, connectors, auth
+from app.api.v1 import assets, risks, controls, frameworks, blast_radius, dashboard, connectors, auth, organisation
 from app.connectors import setup as connector_setup  # noqa: F401 -- registers adapters on import
 from app.auth.api_key import verify_api_key
 
@@ -52,6 +52,7 @@ app.include_router(frameworks.router,   prefix="/api/v1/frameworks", tags=["Fram
 app.include_router(blast_radius.router, prefix="/api/v1/graph",      tags=["Graph Intelligence"], dependencies=_auth)
 app.include_router(dashboard.router,    prefix="/api/v1/dashboard",  tags=["Dashboard"],  dependencies=_auth)
 app.include_router(connectors.router,   prefix="/api/v1/connectors", tags=["Connectors"], dependencies=_auth)
+app.include_router(organisation.router, prefix="/api/v1/organisation", tags=["Organisation"], dependencies=_auth)
 
 @app.get("/")
 async def root():

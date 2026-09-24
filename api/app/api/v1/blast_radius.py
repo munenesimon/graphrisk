@@ -5,6 +5,35 @@ from app.auth.jwt_auth import get_current_user, CurrentUser
 
 router = APIRouter()
 
+CLOCK_NOTE = (
+    "Deadlines run from when you become aware of a breach or incident, not from this analysis. "
+    "They show which regulatory clocks would start if this exposure were exploited, based on your "
+    "organisation's regulatory profile. GraphRisk-curated regulatory data -- not legal advice."
+)
+
+
+def _regulatory_obligations(tenant_id: str, asset_ids: list) -> dict:
+    """Notification duties that would apply if these assets were involved in a breach/incident."""
+    obligations = []
+    if asset_ids:
+        rows = run_query(queries.REGULATORY_OBLIGATIONS_FOR_ASSETS, {"tenant_id": tenant_id, "asset_ids": asset_ids})
+        obligations = [{
+            "framework": r["framework"], "framework_id": r["framework_id"],
+            "requirement": r["requirement"], "title": r["title"],
+            "notify": r["notify"], "deadline_hours": r["deadline_hours"],
+            "trigger": r["trigger"], "condition": r["condition"],
+            "legal_source": r["legal_source"],
+            "triggered_by_assets": r["triggered_by_assets"] or [],
+        } for r in rows]
+    block = {"note": CLOCK_NOTE, "obligations": obligations}
+    if not obligations:
+        profile = run_query(queries.GET_REGULATORY_PROFILE, {"tenant_id": tenant_id})
+        if not profile or not (profile[0].get("frameworks") or []):
+            block["hint"] = ("No regulatory profile set, so no obligations can be shown. "
+                             "Set one with PUT /api/v1/organisation/regulatory-profile.")
+    return block
+
+
 @router.get("/blast-radius/control/{control_id}")
 async def blast_radius_control(control_id: str, user: CurrentUser = Depends(get_current_user)):
     result = run_query(queries.BLAST_RADIUS_CONTROL, {"control_id": control_id, "tenant_id": user.graph_tenant_id})
@@ -23,7 +52,35 @@ async def blast_radius_control(control_id: str, user: CurrentUser = Depends(get_
             # this still works if graphrisk_core is older than this router.
             "mapped_framework_controls": row.get("mapped_framework_controls", []),
         },
+        "regulatory_obligations": _regulatory_obligations(user.graph_tenant_id, row.get("affected_asset_ids") or []),
         "summary": {"risk_count": row["risk_count"], "asset_count": row["asset_count"], "framework_count": row["framework_count"]}
+    }
+
+
+@router.get("/vulnerability-impact/{cve_id}")
+async def vulnerability_impact(cve_id: str, user: CurrentUser = Depends(get_current_user)):
+    """
+    "This CVE was published today -- what does it mean for us?" Returns the
+    caller's assets the CVE is linked to (via correlation or manual linking),
+    the risks and mitigating controls on those assets, affected business
+    processes, and the regulatory clocks that would start if it were exploited.
+    """
+    cve_id = cve_id.strip().upper()
+    rows = run_query(queries.VULNERABILITY_IMPACT, {"cve_id": cve_id, "tenant_id": user.graph_tenant_id})
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"{cve_id} is not in GraphRisk's vulnerability data (CISA KEV / NVD critical)")
+    v = rows[0]
+    assets = v["exposed_assets"] or []
+    return {
+        "cve_id": v["cve_id"], "title": v["title"], "description": v["description"],
+        "severity": v["severity"], "cvss_score": v["cvss_score"],
+        "known_ransomware_use": v["known_ransomware_use"], "source": v["source"],
+        "affects_you": bool(assets),
+        "exposed_assets": assets,
+        "risks": v["risks"] or [],
+        "mitigating_controls": v["mitigating_controls"] or [],
+        "impacted_processes": v["impacted_processes"] or [],
+        "regulatory_obligations": _regulatory_obligations(user.graph_tenant_id, [a["id"] for a in assets]),
     }
 
 @router.get("/blast-radius/technique/{technique_id}")

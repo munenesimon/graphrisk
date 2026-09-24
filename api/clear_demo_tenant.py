@@ -1,7 +1,7 @@
 """
 GraphRisk — Clear Tenant Data
-One-off cleanup: deletes every Asset/Risk/Control node (and their
-relationships) belonging to a given tenant_id from the graph, so
+One-off cleanup: deletes a tenant's Asset/Risk/Control nodes and its
+Organisation (regulatory profile) node, with their relationships, so
 seed_demo.py can be re-run against that tenant without duplicating
 everything it already created.
 
@@ -14,7 +14,7 @@ Neo4j your .env in that folder points at:
     python clear_demo_tenant.py [tenant_id]
 Defaults to tenant_id "demo" if none is given.
 
-Only deletes tenant-scoped nodes (Asset/Risk/Control) -- never touches
+Only deletes tenant-scoped nodes (Asset/Risk/Control/Organisation) -- never touches
 Vulnerability, Framework, FrameworkControl or Technique nodes, which are
 shared/global data, not per-tenant.
 
@@ -28,7 +28,7 @@ from app.graph.connection import run_write, get_graph_client, close_graph_client
 TENANT_ID = sys.argv[1] if len(sys.argv) > 1 else "demo"
 
 CLEAR_TENANT_DATA = """
-    MATCH (n) WHERE (n:Asset OR n:Risk OR n:Control) AND n.tenant_id = $tenant_id
+    MATCH (n) WHERE (n:Asset OR n:Risk OR n:Control OR n:Organisation) AND n.tenant_id = $tenant_id
     DETACH DELETE n
     RETURN count(n) AS deleted
 """
@@ -38,8 +38,9 @@ def main():
     print("=" * 55)
     print(f"  Clear tenant data: '{TENANT_ID}'")
     print("=" * 55)
-    print("  This permanently deletes every Asset/Risk/Control node for this")
-    print("  tenant, and every relationship attached to them. Vulnerability,")
+    print("  This permanently deletes every Asset/Risk/Control node and the")
+    print("  regulatory profile for this tenant, and every relationship attached")
+    print("  to them. Vulnerability,")
     print("  Framework and Technique nodes are shared data and are NOT touched.")
     print()
     confirm = input(f"  Type the tenant id ('{TENANT_ID}') to confirm, anything else to abort: ")

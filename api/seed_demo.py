@@ -25,6 +25,13 @@ GRAPHRISK_BASE_URL and GRAPHRISK_API_KEY set to the deployed values.
 Note: this script always creates new assets/risks/controls -- it doesn't
 check for or clean up ones that already exist. Re-running it against an
 already-seeded tenant will duplicate everything, not update it in place.
+Run clear_demo_tenant.py first to start clean.
+
+The demo organisation is modelled as a Kenyan commercial bank: subject to
+the Kenya Data Protection Act, the CBK Guidance Note on Cybersecurity and
+the CMCA critical-infrastructure regulations. Those frameworks must already
+be loaded into the graph (data-ingestion DS-10 and DS-11) or the profile
+step fails with a clear error.
 """
 import os
 import requests
@@ -73,26 +80,40 @@ def post(path, body=None, params=None):
     return r.json()
 
 
+# Frameworks the demo organisation is subject to (see module docstring).
+DEMO_REGULATORY_PROFILE = {
+    "frameworks": ["KE_DPA_2019", "CBK_CYBER_BANKS_2017", "KE_CMCA_CII_2024"],
+    "qualifiers": [],
+}
+
+
+def put(path, body):
+    r = requests.put(f"{BASE}{path}", json=body, headers=_headers())
+    if not r.ok:
+        raise RuntimeError(f"PUT {path} failed ({r.status_code}): {r.text}")
+    return r.json()
+
+
 def main():
     print("=" * 55)
     print("  GraphRisk — Demo Seed Data")
     print("=" * 55)
 
-    print("\n[0/5] Authenticating...")
+    print("\n[0/6] Authenticating...")
     authenticate()
 
     # ── Assets ────────────────────────────────────────────────
-    print("\n[1/5] Creating demo assets...")
+    print("\n[1/6] Creating demo assets...")
     # vendor/product are what the correlation engine (CORRELATE_NEW_ASSET_AGAINST_ALL_VULNERABILITIES
     # on creation, and the daily sync's CORRELATE_RECENT_VULNERABILITIES) actually match against --
     # without them an asset just can't pick up any CVE, no matter how relevant. Chosen to be real
     # vendor/product pairs with genuine CVE history in CISA KEV / NVD, not just plausible-sounding
     # labels, so correlation has something real to find.
     assets = [
-        {"name": "Microsoft 365",   "asset_type": "CloudService", "criticality": "Critical", "owner": "IT Team",      "environment": "Production", "vendor": "Microsoft", "product": "Office"},
+        {"name": "Microsoft 365",   "asset_type": "CloudService", "criticality": "Critical", "owner": "IT Team",      "environment": "Production", "vendor": "Microsoft", "product": "Office", "holds_personal_data": True},
         {"name": "VPN Gateway",     "asset_type": "Server",       "criticality": "High",     "owner": "Network Team", "environment": "Production", "vendor": "Ivanti",    "product": "Connect Secure"},
-        {"name": "Payroll System",  "asset_type": "Application",  "criticality": "Critical", "owner": "Finance Team", "environment": "Production", "vendor": "Oracle",    "product": "PeopleSoft"},
-        {"name": "HR Database",     "asset_type": "Database",     "criticality": "Critical", "owner": "HR Team",      "environment": "Production", "vendor": "Microsoft", "product": "SQL Server"},
+        {"name": "Payroll System",  "asset_type": "Application",  "criticality": "Critical", "owner": "Finance Team", "environment": "Production", "vendor": "Oracle",    "product": "PeopleSoft", "holds_personal_data": True},
+        {"name": "HR Database",     "asset_type": "Database",     "criticality": "Critical", "owner": "HR Team",      "environment": "Production", "vendor": "Microsoft", "product": "SQL Server", "holds_personal_data": True},
         {"name": "Email Gateway",   "asset_type": "Application",  "criticality": "High",     "owner": "IT Team",      "environment": "Production", "vendor": "Barracuda", "product": "Email Security Gateway"},
     ]
     asset_ids = {}
@@ -104,7 +125,7 @@ def main():
         print(f"  + {a['name']} ({a['criticality']}) -> {result['id'][:8]}...{extra}")
 
     # ── Risks ─────────────────────────────────────────────────
-    print("\n[2/5] Creating demo risks...")
+    print("\n[2/6] Creating demo risks...")
     risks = [
         {"title": "Identity Compromise Risk",  "description": "Risk of unauthorized access via compromised or stolen credentials", "likelihood": 4, "impact": 5, "owner": "CISO", "status": "Open"},
         {"title": "Ransomware Infection Risk", "description": "Risk of ransomware encrypting critical business data and systems",   "likelihood": 3, "impact": 5, "owner": "CISO", "status": "Open"},
@@ -117,7 +138,7 @@ def main():
         print(f"  + {ri['title']} (score: {result['risk_score']}) -> {result['id'][:8]}...")
 
     # ── Controls ──────────────────────────────────────────────
-    print("\n[3/5] Creating demo controls...")
+    print("\n[3/6] Creating demo controls...")
     controls_data = [
         {"title": "Multi-Factor Authentication",    "description": "MFA enforced for all users and privileged accounts across all systems", "control_type": "Preventive", "implementation_status": "Implemented",          "effectiveness_score": 0.9, "owner": "IT Security"},
         {"title": "Endpoint Detection & Response",  "description": "EDR solution deployed on all managed endpoints with active monitoring",  "control_type": "Detective",  "implementation_status": "Implemented",          "effectiveness_score": 0.8, "owner": "SOC Team"},
@@ -131,7 +152,7 @@ def main():
         print(f"  + {c['title']} ({c['implementation_status']}) -> {result['id'][:8]}...")
 
     # ── Link Risks to Assets ──────────────────────────────────
-    print("\n[4/5] Linking risks to assets...")
+    print("\n[4/6] Linking risks to assets...")
     mfa_id  = control_ids["Multi-Factor Authentication"]
     edr_id  = control_ids["Endpoint Detection & Response"]
     pam_id  = control_ids["Privileged Access Management"]
@@ -155,7 +176,7 @@ def main():
     print(f"  + {len(links)} risk-asset links created")
 
     # ── Link Controls to Risks ────────────────────────────────
-    print("\n[5/5] Linking controls to risks and frameworks...")
+    print("\n[5/6] Linking controls to risks and frameworks...")
 
     # Control -> Risk links
     ctrl_risk_links = [
@@ -191,6 +212,12 @@ def main():
     post(f"/assets/{asset_ids['VPN Gateway']}/link-vulnerability", params={"cve_id": "CVE-2024-21887"})
     print("  + CVE-2024-21887 linked to VPN Gateway")
 
+    # ── Regulatory profile ────────────────────────────────────
+    print("\n[6/6] Setting regulatory profile (Kenyan commercial bank)...")
+    profile = put("/organisation/regulatory-profile", DEMO_REGULATORY_PROFILE)
+    print(f"  + Subject to: {', '.join(f['id'] for f in profile['frameworks'])}")
+    print("  + Personal data held by: Microsoft 365, Payroll System, HR Database")
+
     # ── Summary ───────────────────────────────────────────────
     print("\n" + "=" * 55)
     print("  Seed Complete")
@@ -198,6 +225,8 @@ def main():
     print(f"\n  MFA Control ID: {mfa_id}")
     print(f"\n  Test blast radius (needs the Authorization/X-API-Key headers above):")
     print(f"  GET {BASE}/graph/blast-radius/control/{mfa_id}")
+    print("\n  Test regulatory clocks for a real CVE (VPN Gateway is Ivanti Connect Secure):")
+    print(f"  GET {BASE}/graph/vulnerability-impact/CVE-2024-21887")
     print("\n  Test dashboard:")
     print(f"  GET {BASE}/dashboard/summary")
     print("=" * 55)
