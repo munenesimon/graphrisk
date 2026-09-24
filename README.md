@@ -177,9 +177,9 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 | Vendor breach cascade | ✅ Proven with real graph data |
 | Universal connector pattern | ✅ Proven across 4 auth patterns |
 | Vulnerability-to-asset correlation | ✅ Automated — daily sync + at asset onboarding |
+| Flutter Web frontend | ✅ Live on Firebase Hosting |
+| Multi-tenancy | ✅ JWT-enforced tenant scoping on every data endpoint (PostgreSQL on Neon free tier) |
 | Connector coverage | ⚠️ 5 connectors vs. 200+ in mature tools |
-| Flutter Web frontend | ⚠️ Works locally; static hosting pending |
-| Multi-tenancy | ⚠️ JWT enforced; PostgreSQL on free tier |
 | GitHub Actions daily sync | ⚠️ Built; not yet re-tested post-migration |
 | Production hardening | ⚠️ e2-micro Neo4j VM is memory-constrained (~1.4s query latency) |
 
