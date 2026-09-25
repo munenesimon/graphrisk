@@ -5,6 +5,7 @@ import '../constants/frameworks.dart';
 import '../models/dashboard.dart';
 import '../services/api_service.dart';
 import '../widgets/regulatory_obligations_card.dart';
+import '../widgets/blast_radius_graph.dart';
 
 class BlastRadiusScreen extends StatefulWidget {
   /// Lets the caller (MainShell) offer a jump to the Regulatory Profile
@@ -25,6 +26,11 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
   // "all": every framework this control supports, grouped. "applicable":
   // standards plus only the regulations in the tenant's regulatory profile.
   String _scope = 'all';
+
+  // "list": the existing animated cascade (unchanged). "graph": a radial
+  // node/edge view of the same result via BlastRadiusGraph -- purely a
+  // different rendering of _result, not a different query.
+  String _view = 'list';
 
   // One AnimationController per cascade layer
   late final List<AnimationController> _layerControllers;
@@ -215,12 +221,22 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
         const SizedBox(height: 12),
 
         // ── Scope toggle ─────────────────────────────────────────────────────
-        Row(children: [
-          const Text('Frameworks:', style: TextStyle(color: Colors.white38, fontSize: 12)),
-          const SizedBox(width: 10),
-          _ScopeChip(label: 'All', selected: _scope == 'all', onTap: () => _setScope('all')),
-          const SizedBox(width: 8),
-          _ScopeChip(label: 'Only mine', selected: _scope == 'applicable', onTap: () => _setScope('applicable')),
+        Wrap(spacing: 20, runSpacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: [
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            const Text('Frameworks:', style: TextStyle(color: Colors.white38, fontSize: 12)),
+            const SizedBox(width: 10),
+            _ScopeChip(label: 'All', selected: _scope == 'all', onTap: () => _setScope('all')),
+            const SizedBox(width: 8),
+            _ScopeChip(label: 'Only mine', selected: _scope == 'applicable', onTap: () => _setScope('applicable')),
+          ]),
+          if (_result != null)
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              const Text('View:', style: TextStyle(color: Colors.white38, fontSize: 12)),
+              const SizedBox(width: 10),
+              _ScopeChip(label: 'List', selected: _view == 'list', onTap: () => setState(() => _view = 'list')),
+              const SizedBox(width: 8),
+              _ScopeChip(label: 'Graph', selected: _view == 'graph', onTap: () => setState(() => _view = 'graph')),
+            ]),
         ]),
 
         const SizedBox(height: 28),
@@ -228,8 +244,31 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
         // ── Error state ──────────────────────────────────────────────────────
         if (_error != null) _ErrorCard(message: _error!),
 
+        // ── Graph visualization (same _result, radial node/edge view) ─────────
+        if (_result != null && _view == 'graph') ...[
+          Container(
+            height: 700,
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: kSurface.withOpacity(0.4),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white.withOpacity(0.06)),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: BlastRadiusGraph(result: _result!),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Drag to pan, pinch/scroll to zoom, tap a node for its full name. '
+            'Only categories with results are shown; a category with more than '
+            '10 items collapses the rest into a "+N more" node -- switch to List '
+            'view for the complete set.',
+            style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.4),
+          ),
+        ],
+
         // ── Cascade visualization ────────────────────────────────────────────
-        if (_result != null) ...[
+        if (_result != null && _view == 'list') ...[
           // Trigger node
           _TriggerNode(result: _result!, pulseAnim: _pulseAnim),
 

@@ -72,8 +72,10 @@ A three-layer adapter pattern (BaseConnector → per-vendor Adapter → CheckReg
 | AWS | SDK-managed IAM keys (boto3) | 4 | Offline-verified via moto |
 | Okta | Static API key header | 4 | Offline-verified via responses |
 | Wazuh | HTTP Basic → session JWT (self-hosted SIEM/XDR) | 2 | Structurally complete; pending a live instance |
+| CrowdStrike Falcon | OAuth 2.0 client credentials | 4 | Offline-verified via responses; pending a live tenant |
+| Qualys VM | HTTP Basic (per request), XML-only API | 4 | Offline-verified via responses; pending a live subscription |
 
-Adding a new vendor means writing one adapter file (~150 lines) and one registration line. The registry, graph write, and cascade logic never change.
+Adding a new vendor means writing one adapter file (~150 lines) and one registration line. The registry, graph write, and cascade logic never change. Qualys's VM API is the one exception worth calling out: it's XML-only (no JSON output option), so that adapter parses responses with Python's built-in `xml.etree.ElementTree` rather than pulling in a new dependency for one vendor.
 
 Credentials can be saved per tenant (Fernet-encrypted at rest, Neo4j-backed, owner/admin only) so a connector doesn't need its config re-entered on every run — a later run automatically merges in the saved values, and typing a new value for one run never overwrites what's saved unless you explicitly hit Save again. Saved values are never returned to the client; the API reports only which config keys are set. Live-verified end to end: saved Entra ID test credentials were picked up on a subsequent run with every field left blank (visible as a real, correctly-rejected OAuth request to Microsoft's token endpoint), and clearing them removed the saved state immediately, confirmed after a full logout/login cycle.
 
@@ -199,7 +201,7 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 | Flutter Web frontend | ✅ Live on Firebase Hosting |
 | Multi-tenancy | ✅ JWT-enforced tenant scoping on every data endpoint (PostgreSQL on Neon free tier) |
 | GitHub Actions daily sync | ✅ Running reliably against Google Cloud Neo4j (18/19 recent runs succeeded) |
-| Connector coverage | ⚠️ 5 connectors vs. 200+ in mature tools |
+| Connector coverage | ⚠️ 7 connectors vs. 200+ in mature tools |
 | Sync correlation scope | ℹ️ Daily sync correlates new CVEs against the demo tenant by design — that's the account anyone testing GraphRisk logs into, so it stays populated with live data rather than sitting on months-old seed data. Not yet extended to arbitrary tenants. |
 | Kenyan regulatory crosswalk | ⚠️ GraphRisk-curated mappings, not an official crosswalk — coverage means mapped controls are in place, not legal compliance (not legal advice). All 27 Data Protection Act / General Regulations 2021 requirements now cite the exact statutory section or regulation sub-clause (verified against the primary text, including regulation 32(a)-(k) of the 2021 Regulations in full). |
 | Regulatory clocks | ⚠️ Driven by a self-declared regulatory profile and per-asset personal-data flags. Deadlines run from becoming aware of a breach, and whether an incident is "significant" enough to report is a human judgement GraphRisk doesn't make — it shows the duty and its condition. Live in the Flutter UI (Regulatory Profile screen, Assets screen, and as a layer on Blast Radius / Vulnerability Impact) as well as the API. |
@@ -210,9 +212,9 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 ## Roadmap
 
 - [x] Regulatory profile, personal-data flags and notification clocks in the Flutter UI
-- [ ] Real vendor credential testing (AWS free tier, Okta developer org)
-- [ ] Wazuh connector live-data validation (pending a self-hosted instance)
-- [ ] CrowdStrike / Qualys connector adapters
+- [ ] Real vendor credential testing (AWS free tier, Okta developer org, CrowdStrike/Qualys trial)
+- [ ] Wazuh / CrowdStrike / Qualys connector live-data validation (pending real credentials/instances)
+- [x] CrowdStrike / Qualys connector adapters
 - [x] Connector management UI in Flutter
 - [x] Persistent encrypted connector credential storage
 - [ ] Graph canvas visualization for blast radius
@@ -232,7 +234,7 @@ graphrisk/
 │   │   │   ├── base.py     # BaseConnector (transport layer)
 │   │   │   ├── registry.py # CheckRegistry (orchestration)
 │   │   │   ├── crypto.py   # Fernet encryption for saved credentials
-│   │   │   └── adapters/   # Entra ID, AWS, Okta, Wazuh
+│   │   │   └── adapters/   # Entra ID, AWS, Okta, Wazuh, CrowdStrike, Qualys
 │   │   ├── db/             # SQLAlchemy models + Neon PostgreSQL
 │   │   └── graph/          # Neo4j connection + Cypher queries
 │   └── requirements.txt

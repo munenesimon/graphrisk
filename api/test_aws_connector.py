@@ -51,13 +51,16 @@ def test_aws_adapter():
     print("  Running all supported checks")
     print("-" * 55)
 
-    results = adapter.run_all_checks()
+    results, errors = adapter.run_all_checks()
 
     for r in results:
         print(f"\n  {r.check_id}")
         print(f"    status: {r.status.value}")
         print(f"    score:  {r.score}")
         print(f"    detail: {r.detail}")
+
+    for e in errors:
+        print(f"\n  [ERROR] {e.check_id}: {e.error_type} - {e.message}")
 
     print("\n" + "=" * 55)
     print(f"  Test complete. {len(results)} checks ran successfully.")

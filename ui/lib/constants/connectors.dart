@@ -91,6 +91,30 @@ const List<ConnectorSpec> kConnectorSpecs = [
     ],
     liveVerified: false,
   ),
+  ConnectorSpec(
+    id: 'crowdstrike',
+    name: 'CrowdStrike Falcon',
+    authPattern: 'OAuth 2.0 client credentials',
+    fields: [
+      ConnectorField('client_id', 'Client ID'),
+      ConnectorField('client_secret', 'Client secret', secret: true),
+      ConnectorField('base_url', 'API base URL',
+          hint: 'https://api.crowdstrike.com (defaults to US-1)'),
+    ],
+    liveVerified: false,
+  ),
+  ConnectorSpec(
+    id: 'qualys',
+    name: 'Qualys VM',
+    authPattern: 'HTTP Basic (per request)',
+    fields: [
+      ConnectorField('username', 'Username'),
+      ConnectorField('password', 'Password', secret: true),
+      ConnectorField('base_url', 'API platform URL',
+          hint: 'https://qualysapi.qualys.com (defaults to Platform 1)'),
+    ],
+    liveVerified: false,
+  ),
 ];
 
 ConnectorSpec connectorSpecFor(String id) => kConnectorSpecs.firstWhere(
