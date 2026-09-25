@@ -87,7 +87,7 @@ Real-world, authoritative data — not synthetic demo content.
 | NIST CSF 2.0 | 106 controls | Static |
 | CIS Controls v8.1 | 171 controls + safeguards | Static |
 | PCI DSS v4.0.1 | 12 requirements | Static |
-| Kenya Data Protection Act 2019 (+ 2021 Regulations) | 23 requirements, 57 NIST crosswalk mappings | Static (GraphRisk-curated) |
+| Kenya Data Protection Act 2019 (+ 2021 Regulations) | 27 requirements, 70 NIST crosswalk mappings | Static (GraphRisk-curated) |
 | CBK Guidance Note on Cybersecurity (banks, 2017) | 19 requirements, 48 NIST crosswalk mappings | Static (GraphRisk-curated) |
 | CBK Guideline on Cybersecurity for PSPs (2019) | 21 requirements, 50 NIST crosswalk mappings | Static (GraphRisk-curated) |
 | CMCA Critical Information Infrastructure Regulations 2024 | 3 requirements, 7 NIST crosswalk mappings | Static (GraphRisk-curated) |
@@ -198,15 +198,15 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 | GitHub Actions daily sync | ✅ Running reliably against Google Cloud Neo4j (18/19 recent runs succeeded) |
 | Connector coverage | ⚠️ 5 connectors vs. 200+ in mature tools |
 | Sync correlation scope | ℹ️ Daily sync correlates new CVEs against the demo tenant by design — that's the account anyone testing GraphRisk logs into, so it stays populated with live data rather than sitting on months-old seed data. Not yet extended to arbitrary tenants. |
-| Kenyan regulatory crosswalk | ⚠️ GraphRisk-curated mappings, not an official crosswalk — coverage means mapped controls are in place, not legal compliance (not legal advice). Six items derived from the Data Protection (General) Regulations 2021 are pending primary-text verification. |
-| Regulatory clocks | ⚠️ Driven by a self-declared regulatory profile and per-asset personal-data flags. Deadlines run from becoming aware of a breach, and whether an incident is "significant" enough to report is a human judgement GraphRisk doesn't make — it shows the duty and its condition. API-only for now; not yet in the Flutter UI. |
+| Kenyan regulatory crosswalk | ⚠️ GraphRisk-curated mappings, not an official crosswalk — coverage means mapped controls are in place, not legal compliance (not legal advice). All 27 Data Protection Act / General Regulations 2021 requirements now cite the exact statutory section or regulation sub-clause (verified against the primary text, including regulation 32(a)-(k) of the 2021 Regulations in full). |
+| Regulatory clocks | ⚠️ Driven by a self-declared regulatory profile and per-asset personal-data flags. Deadlines run from becoming aware of a breach, and whether an incident is "significant" enough to report is a human judgement GraphRisk doesn't make — it shows the duty and its condition. Live in the Flutter UI (Regulatory Profile screen, Assets screen, and as a layer on Blast Radius / Vulnerability Impact) as well as the API. |
 | Production hardening | ⚠️ e2-micro Neo4j VM is memory-constrained (~1.4s query latency) |
 
 ---
 
 ## Roadmap
 
-- [ ] Regulatory profile, personal-data flags and notification clocks in the Flutter UI
+- [x] Regulatory profile, personal-data flags and notification clocks in the Flutter UI
 - [ ] Real vendor credential testing (AWS free tier, Okta developer org)
 - [ ] Wazuh connector live-data validation (pending a self-hosted instance)
 - [ ] CrowdStrike / Qualys connector adapters
@@ -237,7 +237,10 @@ graphrisk/
 │   └── fix_vuln_correlation_v4.py  # Vulnerability-to-asset correlation
 └── ui/                     # Flutter Web frontend
     └── lib/
-        ├── screens/        # Dashboard, Blast Radius, Frameworks, Vulnerabilities, Login
+        ├── constants/      # Colors, API config, framework display names/descriptions
+        ├── screens/        # Dashboard, Blast Radius, Frameworks, Vulnerabilities,
+        │                   # Assets, Regulatory Profile, Login
+        ├── widgets/        # Shared widgets (e.g. regulatory notification-clocks card)
         └── services/       # API service layer with JWT auth
 ```
 

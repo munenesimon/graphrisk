@@ -24,10 +24,25 @@ requirement_type:
    process    -- a documented process; mappable to NIST process controls
    legal      -- needs legal/manual attestation; deliberately NOT mapped
 
-Rows with needs_verification=True come from the Data Protection (General)
-Regulations 2021, Part V (regs 27-36), sourced from secondary legal
-summaries. Confirm the exact regulation number against the primary text
-before citing them externally.
+The DPR-* rows below implement Data Protection (General) Regulations 2021,
+regulation 32 ("Elements for principle of integrity, confidentiality and
+availability"), one row per lettered sub-clause 32(a)-(k) (32(g) and 32(h)
+are combined into one row, DPR-LOGGING, since both are routine security-
+control housekeeping). Six of these rows (DPR-ACCESS, DPR-LOGGING,
+DPR-VULN, DPR-TRANSFER, DPR-SEGREGATION, DPR-DETECTION) were originally
+sourced from secondary legal summaries citing only "Part V" and flagged
+needs_verification=True; the remaining four (DPR-ISMS, DPR-RISK,
+DPR-RESILIENCE, DPR-STORAGE) were drafted directly from the primary text.
+All ten were verified 2026-09 against the regulation's primary text
+(Office of the Data Protection Commissioner's published copy, cross-checked
+against Kenya Law's AKN record for LN 263 of 2021); needs_verification is
+False and legal_source cites the sub-clause directly. The NIST/CSF crosswalk
+targets for the four new rows (PM-1, PL-1, RA-7, CP-2, SI-13, SI-7,
+GV.PO-01, ID.RA-06, PR.IR-04) are standard Rev5/CSF-2.0 identifiers but
+were not confirmed against this graph's own loaded control set before this
+edit -- spot-check they exist as FrameworkControl nodes before relying on
+the mapping (e.g. `MATCH (fc:FrameworkControl) WHERE fc.id IN [...] RETURN fc.id`)
+and re-running 02_nist_800_53.py / 01_nist_csf.py first if any are missing.
 
 Usage (from the data-ingestion folder, .env pointing at the target graph):
     python ingest/10_kenya_dpa.py
@@ -158,36 +173,64 @@ REQUIREMENTS = [
      "server or data centre located in Kenya. Needs legal attestation -- not mapped.",
      "Data Protection Act 2019, s.50", None, False),
 
-    # ── Data Protection (General) Regulations 2021 -- see needs_verification note ──
+    # ── Data Protection (General) Regulations 2021, reg. 32 -- verified 2026-09
+    # against the ODPC's published text of the regulation, in (a)-(k) order. ──
+    ("DPR-ISMS", "Security measures", "process",
+     "Operative information-security policy and procedure management",
+     "Maintain an operative means of managing information-security policies and "
+     "procedures -- an active management process, not just a written policy on file.",
+     "Data Protection (General) Regulations 2021, reg. 32(a)", None, False),
+
+    ("DPR-RISK", "Security measures", "process",
+     "Ongoing risk assessment for personal-data security",
+     "Assess the risks to the security of personal data and put in place measures "
+     "that counter the risks identified. Distinct from the one-off DPIA required "
+     "before high-risk processing under s.31 -- this is a standing security risk "
+     "assessment.",
+     "Data Protection (General) Regulations 2021, reg. 32(b)", None, False),
+
+    ("DPR-RESILIENCE", "Security measures", "technical",
+     "Processing resilient to change, incidents and cyber-attacks",
+     "Design processing so it stays robust through organisational change, evolving "
+     "regulatory demands, security incidents and cyber-attacks -- ongoing "
+     "operational resilience, not just post-incident recovery.",
+     "Data Protection (General) Regulations 2021, reg. 32(c)", None, False),
+
     ("DPR-ACCESS", "Security measures", "technical",
      "Access restricted to authorised personnel",
      "Restrict access to personal data to personnel who need it.",
-     "Data Protection (General) Regulations 2021, Part V", None, True),
-
-    ("DPR-LOGGING", "Security measures", "technical",
-     "Backups, audit logs and event monitoring",
-     "Maintain backups and audit logs, with audit trails and event monitoring.",
-     "Data Protection (General) Regulations 2021, Part V", None, True),
-
-    ("DPR-VULN", "Security measures", "technical",
-     "Regular vulnerability testing",
-     "Test software for vulnerabilities on a regular basis.",
-     "Data Protection (General) Regulations 2021, Part V", None, True),
+     "Data Protection (General) Regulations 2021, reg. 32(d)", None, False),
 
     ("DPR-TRANSFER", "Security measures", "technical",
      "Secure data transfers",
      "Protect personal data in transfer against unauthorised access and alteration.",
-     "Data Protection (General) Regulations 2021, Part V", None, True),
+     "Data Protection (General) Regulations 2021, reg. 32(e)", None, False),
+
+    ("DPR-STORAGE", "Security measures", "technical",
+     "Secure data storage against unauthorised use, access and alteration",
+     "Protect personal data as stored -- at rest -- against unauthorised use, "
+     "access and alteration. Distinct from DPR-TRANSFER, which covers data in transit.",
+     "Data Protection (General) Regulations 2021, reg. 32(f)", None, False),
+
+    ("DPR-LOGGING", "Security measures", "technical",
+     "Backups, audit logs and event monitoring",
+     "Maintain backups and audit logs, with audit trails and event monitoring.",
+     "Data Protection (General) Regulations 2021, reg. 32(g)-(h)", None, False),
 
     ("DPR-SEGREGATION", "Security measures", "technical",
      "Separate storage of sensitive personal data",
      "Keep sensitive personal data separate from other data where feasible.",
-     "Data Protection (General) Regulations 2021, Part V", None, True),
+     "Data Protection (General) Regulations 2021, reg. 32(i)", None, False),
 
     ("DPR-DETECTION", "Security measures", "technical",
      "Breach detection and handling routines",
      "Have routines in place to detect and handle data breaches.",
-     "Data Protection (General) Regulations 2021, Part V", None, True),
+     "Data Protection (General) Regulations 2021, reg. 32(j)", None, False),
+
+    ("DPR-VULN", "Security measures", "technical",
+     "Regular vulnerability testing",
+     "Test software for vulnerabilities on a regular basis.",
+     "Data Protection (General) Regulations 2021, reg. 32(k)", None, False),
 ]
 
 # Breach-notice duties (s.43). The deadline column in REQUIREMENTS above
@@ -218,6 +261,23 @@ NOTIFICATIONS = {
 N = "NIST_800_53_R5_"
 C = "NIST_CSF_2_"
 MAPPINGS = [
+    ("DPR-ISMS",     N + "PM-1",     "high"),
+    ("DPR-ISMS",     N + "PL-1",     "medium"),
+    ("DPR-ISMS",     C + "GV.PO-01", "high"),
+
+    ("DPR-RISK",     N + "RA-3",     "high"),
+    ("DPR-RISK",     N + "RA-7",     "medium"),
+    ("DPR-RISK",     C + "ID.RA-06", "medium"),
+
+    ("DPR-RESILIENCE", N + "CP-2",   "high"),
+    ("DPR-RESILIENCE", N + "SI-13",  "medium"),
+    ("DPR-RESILIENCE", C + "PR.IR-04", "medium"),
+
+    ("DPR-STORAGE",  N + "SC-28",    "high"),
+    ("DPR-STORAGE",  N + "AC-3",     "medium"),
+    ("DPR-STORAGE",  N + "SI-7",     "medium"),
+    ("DPR-STORAGE",  C + "PR.DS-01", "high"),
+
     ("DPA-25",       N + "PT-2",     "medium"),
     ("DPA-25",       N + "PT-3",     "medium"),
     ("DPA-25",       C + "GV.OC-03", "medium"),
