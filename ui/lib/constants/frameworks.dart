@@ -8,8 +8,13 @@
 const Map<String, String> kFrameworkDisplayNames = {
   'NIST_800_53': 'NIST SP 800-53 Rev5',
   'NIST_CSF': 'NIST CSF 2.0',
-  'CIS_V8': 'CIS Controls v8.1',
-  'PCI_DSS_4': 'PCI DSS v4.0.1',
+  // Verified live against GET /frameworks/ -- these two are the actual
+  // Framework.name slugs in the graph, not the "CIS_V8"/"PCI_DSS_4" guess
+  // the pre-existing blast-radius switch statement used (which never
+  // actually matched either, so it silently fell through to its default
+  // case before this file existed).
+  'CIS_Controls': 'CIS Controls v8.1',
+  'PCI_DSS': 'PCI DSS v4.0.1',
   'KENYA_DPA': 'Kenya Data Protection Act 2019',
   'CBK_CYBER_BANKS': 'CBK Cybersecurity Guidance (Banks, 2017)',
   'CBK_CYBER_PSP': 'CBK Cybersecurity Guideline (PSPs, 2019)',
@@ -21,9 +26,9 @@ const Map<String, String> kFrameworkDescriptions = {
       'Gaps here affect your compliance posture with US government standards.',
   'NIST_CSF': 'NIST Cybersecurity Framework 2.0 — The industry-standard risk '
       'management framework used by organizations of all sizes.',
-  'CIS_V8': 'CIS Controls v8.1 — Prioritized security best practices. '
+  'CIS_Controls': 'CIS Controls v8.1 — Prioritized security best practices. '
       'Control gaps here affect your Implementation Group coverage.',
-  'PCI_DSS_4': 'PCI DSS v4.0.1 — Required for organizations handling payment card data. '
+  'PCI_DSS': 'PCI DSS v4.0.1 — Required for organizations handling payment card data. '
       'Gaps here carry financial and contractual penalties.',
   'KENYA_DPA': "Kenya's Data Protection Act 2019, enforced by the Office of the Data "
       'Protection Commissioner. Gaps here can mean lawful-processing and breach-notice '
@@ -52,6 +57,6 @@ String frameworkDescription(String slug) =>
 const Set<String> kStandardFrameworkNames = {
   'NIST_800_53',
   'NIST_CSF',
-  'CIS_V8',
-  'PCI_DSS_4',
+  'CIS_Controls',
+  'PCI_DSS',
 };
