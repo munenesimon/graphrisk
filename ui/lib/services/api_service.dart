@@ -248,4 +248,24 @@ class ApiService {
     final data = await _get('/graph/vulnerability-impact/${Uri.encodeComponent(cveId.trim())}');
     return VulnerabilityImpact.fromJson(data);
   }
+
+  // ── Connectors ──────────────────────────────────────────────────────────
+  // Global catalog of registered connector adapters and the check_ids each
+  // one implements -- NOT tenant-scoped (see connectors.py: "List all
+  // registered connectors... Global, not tenant-scoped"). Returns
+  // {"connectors": [...ids], "checks": {check_id: connector_id}}.
+  static Future<Map<String, dynamic>> getConnectors() async {
+    return await _get('/connectors/');
+  }
+
+  // Runs every check the named connector supports, scoped to the caller's
+  // own tenant. `config` carries whatever that connector's
+  // REQUIRED_CONFIG_KEYS needs (see constants/connectors.dart) -- the API
+  // has nowhere to persist it, so it is used for this run only and never
+  // saved server-side. Always resolves with a body (checks_run/errors),
+  // even when every check fails on missing/bad config -- only a network
+  // or auth-level failure throws.
+  static Future<Map<String, dynamic>> runConnector(String connectorId, Map<String, String> config) async {
+    return await _post('/connectors/run-connector/$connectorId', {'config': config});
+  }
 }

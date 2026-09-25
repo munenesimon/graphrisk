@@ -6,6 +6,7 @@ import 'screens/frameworks_screen.dart';
 import 'screens/vulnerability_screen.dart';
 import 'screens/assets_screen.dart';
 import 'screens/regulatory_profile_screen.dart';
+import 'screens/connectors_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/api_service.dart';
 
@@ -125,6 +126,7 @@ class _MainShellState extends State<MainShell> {
     VulnerabilityScreen(onManageProfile: () => _navigateTo(_regulatoryProfileIndex)),
     const AssetsScreen(),
     const RegulatoryProfileScreen(),
+    const ConnectorsScreen(),
   ];
 
   final _navItems = const [
@@ -134,6 +136,7 @@ class _MainShellState extends State<MainShell> {
     NavigationRailDestination(icon: Icon(Icons.bug_report_outlined),   selectedIcon: Icon(Icons.bug_report),   label: Text('Vulnerabilities')),
     NavigationRailDestination(icon: Icon(Icons.devices_other_outlined),selectedIcon: Icon(Icons.devices_other),label: Text('Assets')),
     NavigationRailDestination(icon: Icon(Icons.gavel_outlined),        selectedIcon: Icon(Icons.gavel),        label: Text('Regulatory')),
+    NavigationRailDestination(icon: Icon(Icons.link_outlined),         selectedIcon: Icon(Icons.link),         label: Text('Connectors')),
   ];
 
   @override

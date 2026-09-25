@@ -210,7 +210,7 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 - [ ] Real vendor credential testing (AWS free tier, Okta developer org)
 - [ ] Wazuh connector live-data validation (pending a self-hosted instance)
 - [ ] CrowdStrike / Qualys connector adapters
-- [ ] Connector management UI in Flutter
+- [x] Connector management UI in Flutter
 - [ ] Graph canvas visualization for blast radius
 - [ ] CIS Controls commercial licensing review (required before paid use)
 
@@ -237,9 +237,9 @@ graphrisk/
 │   └── fix_vuln_correlation_v4.py  # Vulnerability-to-asset correlation
 └── ui/                     # Flutter Web frontend
     └── lib/
-        ├── constants/      # Colors, API config, framework display names/descriptions
-        ├── screens/        # Dashboard, Blast Radius, Frameworks, Vulnerabilities,
-        │                   # Assets, Regulatory Profile, Login
+        ├── constants/      # Colors, API config, framework display names, connector metadata
+        ├── screens/        # Dashboard, Blast Radius, Frameworks, Vulnerabilities, Assets,
+        │                   # Regulatory Profile, Connectors, Login
         ├── widgets/        # Shared widgets (e.g. regulatory notification-clocks card)
         └── services/       # API service layer with JWT auth
 ```
