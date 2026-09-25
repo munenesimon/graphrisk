@@ -130,6 +130,22 @@ class ApiService {
     throw Exception(detail ?? 'API error ${res.statusCode}: $path');
   }
 
+  static Future<Map<String, dynamic>> _delete(String path) async {
+    final uri = Uri.parse(_base + path);
+    final res = await _client.delete(uri, headers: _authHeaders);
+    if (res.statusCode == 200 || res.statusCode == 204) {
+      if (res.body.isEmpty) return {};
+      return json.decode(res.body) as Map<String, dynamic>;
+    }
+    if (res.statusCode == 401) {
+      logout();
+      onSessionExpired?.call();
+      throw AuthException('Session expired. Please log in again.');
+    }
+    final detail = _extractDetail(res.body);
+    throw Exception(detail ?? 'API error ${res.statusCode}: $path');
+  }
+
   static String? _extractDetail(String body) {
     try {
       final decoded = json.decode(body);
@@ -259,13 +275,36 @@ class ApiService {
   }
 
   // Runs every check the named connector supports, scoped to the caller's
-  // own tenant. `config` carries whatever that connector's
-  // REQUIRED_CONFIG_KEYS needs (see constants/connectors.dart) -- the API
-  // has nowhere to persist it, so it is used for this run only and never
-  // saved server-side. Always resolves with a body (checks_run/errors),
+  // own tenant. `config` is layered on top of whatever this tenant has
+  // saved for that connector (see getConnectorConfigs/saveConnectorConfig
+  // below) -- pass {} to run with saved credentials untouched, or a
+  // partial map to override just those fields for this one run without
+  // changing what's saved. Always resolves with a body (checks_run/errors),
   // even when every check fails on missing/bad config -- only a network
   // or auth-level failure throws.
   static Future<Map<String, dynamic>> runConnector(String connectorId, Map<String, String> config) async {
     return await _post('/connectors/run-connector/$connectorId', {'config': config});
+  }
+
+  // Which connectors this tenant has saved credentials for, and which
+  // config keys are set for each -- never the values themselves (see
+  // connectors.py's GET /connectors/config). Returns a map keyed by
+  // connector_id: {connector_id: {"config_keys": [...], "updated_at": "..."}}.
+  static Future<Map<String, dynamic>> getConnectorConfigs() async {
+    final data = await _get('/connectors/config');
+    return (data['configs'] as Map? ?? {}).cast<String, dynamic>();
+  }
+
+  // Encrypts and saves config for this tenant + connector, replacing
+  // whatever was saved before for that pair (owner/admin only). Future
+  // runs of this connector use it automatically unless overridden
+  // per-request. Returns {"connector_id": ..., "config_keys": [...]}.
+  static Future<Map<String, dynamic>> saveConnectorConfig(String connectorId, Map<String, String> config) async {
+    return await _put('/connectors/$connectorId/config', {'config': config});
+  }
+
+  // Clears any saved config for this tenant + connector (owner/admin only).
+  static Future<void> deleteConnectorConfig(String connectorId) async {
+    await _delete('/connectors/$connectorId/config');
   }
 }

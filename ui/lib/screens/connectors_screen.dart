@@ -5,15 +5,20 @@ import '../services/api_service.dart';
 
 /// Lets a tenant see every connector adapter registered in this GraphRisk
 /// deployment (the "Universal Connector Architecture" from the README),
-/// what checks each one runs, and -- for owner/admin roles -- test-run one
-/// with real vendor credentials entered here for that run only.
+/// what checks each one runs, and -- for owner/admin roles -- save
+/// credentials for one (encrypted server-side, see api/app/connectors/
+/// crypto.py) and/or run it.
 ///
-/// There is currently no backend endpoint to save connector credentials
-/// per tenant (see api/app/api/v1/connectors.py's ConnectorRunRequest
-/// docstring): every run sends config fresh in the request body and
-/// nothing is persisted server-side. This screen matches that -- text is
-/// held only in local TextEditingControllers, never written to disk or
-/// sent anywhere except that one API call.
+/// Saving is optional: a connector can still be run ad hoc by filling in
+/// its fields and tapping Run without ever saving -- that config is used
+/// for that one call only, exactly as before this screen could persist
+/// anything. Once a field is saved, leaving it blank on a later run reuses
+/// the saved value automatically (the backend merges saved config with
+/// whatever's in the request body); typing a new value overrides it for
+/// that run without changing what's saved. Saved values are never sent
+/// back to this screen -- GET /connectors/config reports which keys are
+/// set, never their values -- so a "saved" field always renders empty
+/// here, not pre-filled.
 class ConnectorsScreen extends StatefulWidget {
   const ConnectorsScreen({super.key});
   @override
@@ -29,8 +34,13 @@ class _ConnectorsScreenState extends State<ConnectorsScreen> {
   String? _expandedId;
   final Map<String, Map<String, TextEditingController>> _controllers = {};
   final Set<String> _running = {};
+  final Set<String> _saving = {};
+  final Set<String> _deleting = {};
   final Map<String, Map<String, dynamic>> _lastResult = {};
   final Map<String, String> _lastError = {};
+  // connector_id -> which of its REQUIRED_CONFIG_KEYS have a saved value.
+  // Populated from GET /connectors/config; never contains actual values.
+  Map<String, List<String>> _savedKeys = {};
 
   bool get _canRun => ApiService.role == 'owner' || ApiService.role == 'admin';
 
@@ -53,17 +63,33 @@ class _ConnectorsScreenState extends State<ConnectorsScreen> {
   Future<void> _load() async {
     setState(() { _loading = true; _error = null; });
     try {
-      final data = await ApiService.getConnectors();
+      // Run together: the connector catalog is global, the saved-config
+      // map is tenant-scoped, and neither depends on the other.
+      final results = await Future.wait([
+        ApiService.getConnectors(),
+        ApiService.getConnectorConfigs(),
+      ]);
+      final data = results[0];
+      final configs = results[1];
+
       final ids = (data['connectors'] as List? ?? []).cast<String>();
       final checksMap = (data['checks'] as Map? ?? {}).cast<String, dynamic>();
       final byConnector = <String, List<String>>{ for (final id in ids) id: [] };
       checksMap.forEach((checkId, connectorId) {
         byConnector.putIfAbsent(connectorId as String, () => []).add(checkId);
       });
+
+      final savedKeys = <String, List<String>>{};
+      configs.forEach((connectorId, entry) {
+        final keys = ((entry as Map?)?['config_keys'] as List?) ?? [];
+        savedKeys[connectorId] = keys.cast<String>();
+      });
+
       if (!mounted) return;
       setState(() {
         _connectorIds = ids;
         _checksByConnector = byConnector;
+        _savedKeys = savedKeys;
         _loading = false;
       });
     } catch (e) {
@@ -100,6 +126,60 @@ class _ConnectorsScreenState extends State<ConnectorsScreen> {
       setState(() => _lastError[spec.id] = e.toString().replaceFirst('Exception: ', ''));
     } finally {
       if (mounted) setState(() => _running.remove(spec.id));
+    }
+  }
+
+  Future<void> _save(ConnectorSpec spec) async {
+    final controllers = _controllersFor(spec);
+    final config = <String, String>{
+      for (final entry in controllers.entries)
+        if (entry.value.text.trim().isNotEmpty) entry.key: entry.value.text.trim(),
+    };
+    if (config.isEmpty) {
+      setState(() => _lastError[spec.id] = 'Enter at least one field before saving.');
+      return;
+    }
+    setState(() {
+      _saving.add(spec.id);
+      _lastError.remove(spec.id);
+    });
+    try {
+      final result = await ApiService.saveConnectorConfig(spec.id, config);
+      if (!mounted) return;
+      final keys = ((result['config_keys'] as List?) ?? []).cast<String>();
+      setState(() {
+        _savedKeys[spec.id] = keys;
+        // Saved values are never shown back to this screen, so there's
+        // nothing useful left in the fields -- clear them rather than
+        // leave plaintext secrets sitting visible after a successful save.
+        for (final c in controllers.values) {
+          c.clear();
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      if (e is AuthException) return;
+      setState(() => _lastError[spec.id] = e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _saving.remove(spec.id));
+    }
+  }
+
+  Future<void> _clearSaved(ConnectorSpec spec) async {
+    setState(() {
+      _deleting.add(spec.id);
+      _lastError.remove(spec.id);
+    });
+    try {
+      await ApiService.deleteConnectorConfig(spec.id);
+      if (!mounted) return;
+      setState(() => _savedKeys.remove(spec.id));
+    } catch (e) {
+      if (!mounted) return;
+      if (e is AuthException) return;
+      setState(() => _lastError[spec.id] = e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _deleting.remove(spec.id));
     }
   }
 
@@ -146,9 +226,9 @@ class _ConnectorsScreenState extends State<ConnectorsScreen> {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                "Credentials entered below are sent directly to GraphRisk's API for that one run "
-                "and are never saved, logged, or stored -- there is no server-side connector "
-                "configuration store yet. Re-enter them each time you want to run a connector.",
+                "Run tests a connector without saving anything. Save encrypts credentials and "
+                "stores them for this connector so future runs don't need them re-entered -- "
+                "saved values are never shown back here, only which fields are set.",
                 style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4),
               ),
             ),
@@ -188,11 +268,16 @@ class _ConnectorsScreenState extends State<ConnectorsScreen> {
               expanded: _expandedId == id,
               canRun: _canRun,
               running: _running.contains(id),
+              saving: _saving.contains(id),
+              deleting: _deleting.contains(id),
+              savedKeys: _savedKeys[id] ?? const [],
               result: _lastResult[id],
               error: _lastError[id],
               controllers: _controllersFor(spec),
               onToggle: () => setState(() => _expandedId = _expandedId == id ? null : id),
               onRun: () => _run(spec),
+              onSave: () => _save(spec),
+              onClearSaved: () => _clearSaved(spec),
             );
           }),
       ]),
@@ -206,11 +291,16 @@ class _ConnectorCard extends StatelessWidget {
   final bool expanded;
   final bool canRun;
   final bool running;
+  final bool saving;
+  final bool deleting;
+  final List<String> savedKeys;
   final Map<String, dynamic>? result;
   final String? error;
   final Map<String, TextEditingController> controllers;
   final VoidCallback onToggle;
   final VoidCallback onRun;
+  final VoidCallback onSave;
+  final VoidCallback onClearSaved;
 
   const _ConnectorCard({
     required this.spec,
@@ -218,11 +308,16 @@ class _ConnectorCard extends StatelessWidget {
     required this.expanded,
     required this.canRun,
     required this.running,
+    required this.saving,
+    required this.deleting,
+    required this.savedKeys,
     required this.result,
     required this.error,
     required this.controllers,
     required this.onToggle,
     required this.onRun,
+    required this.onSave,
+    required this.onClearSaved,
   });
 
   @override
@@ -260,6 +355,19 @@ class _ConnectorCard extends StatelessWidget {
                             style: TextStyle(color: kOrange, fontSize: 9, fontWeight: FontWeight.w600)),
                       ),
                     ],
+                    if (savedKeys.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(color: kGreen.withOpacity(0.15), borderRadius: BorderRadius.circular(4)),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.check_circle, color: kGreen, size: 10),
+                          const SizedBox(width: 3),
+                          Text('${savedKeys.length} saved',
+                              style: const TextStyle(color: kGreen, fontSize: 9, fontWeight: FontWeight.w600)),
+                        ]),
+                      ),
+                    ],
                   ]),
                   const SizedBox(height: 2),
                   Text('${spec.authPattern} · ${checks.length} check${checks.length == 1 ? '' : 's'}',
@@ -285,36 +393,44 @@ class _ConnectorCard extends StatelessWidget {
               ),
               if (spec.fields.isNotEmpty) ...[
                 const SizedBox(height: 16),
-                ...spec.fields.map((f) => Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: TextField(
-                        controller: controllers[f.key],
-                        obscureText: f.secret,
-                        enabled: canRun && !running,
-                        style: const TextStyle(color: Colors.white, fontSize: 13),
-                        decoration: InputDecoration(
-                          labelText: f.label,
-                          hintText: f.hint,
-                          labelStyle: const TextStyle(color: Colors.white38, fontSize: 12),
-                          hintStyle: const TextStyle(color: Colors.white24, fontSize: 12),
-                          filled: true,
-                          fillColor: kSurface2.withOpacity(0.4),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        ),
+                ...spec.fields.map((f) {
+                  final isSaved = savedKeys.contains(f.key);
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: TextField(
+                      controller: controllers[f.key],
+                      obscureText: f.secret,
+                      enabled: canRun && !running && !saving && !deleting,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      decoration: InputDecoration(
+                        labelText: f.label,
+                        hintText: isSaved ? 'Saved -- leave blank to keep it' : f.hint,
+                        suffixIcon: isSaved
+                            ? const Padding(
+                                padding: EdgeInsets.only(right: 4),
+                                child: Icon(Icons.check_circle, color: kGreen, size: 16),
+                              )
+                            : null,
+                        labelStyle: const TextStyle(color: Colors.white38, fontSize: 12),
+                        hintStyle: TextStyle(color: isSaved ? kGreen.withOpacity(0.6) : Colors.white24, fontSize: 12),
+                        filled: true,
+                        fillColor: kSurface2.withOpacity(0.4),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                       ),
-                    )),
+                    ),
+                  );
+                }),
               ] else if (canRun) ...[
                 const SizedBox(height: 16),
                 const Text('No credentials needed -- this adapter has nothing to configure.',
                     style: TextStyle(color: Colors.white38, fontSize: 11)),
               ],
               const SizedBox(height: 12),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: ElevatedButton.icon(
-                  onPressed: canRun && !running ? onRun : null,
+              Wrap(spacing: 10, runSpacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                ElevatedButton.icon(
+                  onPressed: canRun && !running && !saving && !deleting ? onRun : null,
                   icon: running
                       ? const SizedBox(
                           width: 14, height: 14,
@@ -328,7 +444,35 @@ class _ConnectorCard extends StatelessWidget {
                     disabledBackgroundColor: kSurface2,
                   ),
                 ),
-              ),
+                if (spec.fields.isNotEmpty) ...[
+                  OutlinedButton.icon(
+                    onPressed: canRun && !running && !saving && !deleting ? onSave : null,
+                    icon: saving
+                        ? const SizedBox(
+                            width: 14, height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: kAccent),
+                          )
+                        : const Icon(Icons.save_outlined, size: 16),
+                    label: Text(saving ? 'Saving…' : 'Save credentials'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: kAccent,
+                      side: const BorderSide(color: kAccent),
+                    ),
+                  ),
+                  if (savedKeys.isNotEmpty)
+                    TextButton.icon(
+                      onPressed: canRun && !running && !saving && !deleting ? onClearSaved : null,
+                      icon: deleting
+                          ? const SizedBox(
+                              width: 14, height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: kRed),
+                            )
+                          : const Icon(Icons.delete_outline, size: 16, color: kRed),
+                      label: Text(deleting ? 'Clearing…' : 'Clear saved',
+                          style: const TextStyle(color: kRed)),
+                    ),
+                ],
+              ]),
               if (error != null) ...[
                 const SizedBox(height: 12),
                 Container(
