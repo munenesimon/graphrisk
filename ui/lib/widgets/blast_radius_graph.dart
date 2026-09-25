@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../constants/colors.dart';
@@ -31,9 +32,9 @@ class BlastRadiusGraph extends StatelessWidget {
   // unreadable knot. Same spirit as WazuhAdapter's per-run agent cap on
   // the backend: a documented, deliberate limit, not a silent truncation.
   static const int _maxItemsPerCategory = 10;
-  static const double _canvasSize = 1200;
-  static const double _categoryRadius = 190;
-  static const double _itemRadius = 430;
+  static const double _canvasSize = 1300;
+  static const double _categoryRadius = 210;
+  static const double _itemRadius = 460;
 
   List<_Category> _buildCategories() {
     final cats = <_Category>[];
@@ -56,7 +57,9 @@ class BlastRadiusGraph extends StatelessWidget {
       cats.add(_Category('Framework Controls', kAccent, Icons.list_alt_outlined, result.frameworkControls));
     }
     if (result.mappedFrameworkControls.isNotEmpty) {
-      cats.add(_Category('Crosswalk Requirements', kOrange, Icons.alt_route, result.mappedFrameworkControls));
+      // Distinct from Affected Assets' orange -- two categories sharing a
+      // color made the old layout harder to scan at a glance.
+      cats.add(_Category('Crosswalk Requirements', kTeal, Icons.alt_route, result.mappedFrameworkControls));
     }
     final obligationItems = result.regulatoryObligations.obligations
         .map((o) => '${o.title} (${o.deadlineHours}h -> ${o.notify})')
@@ -80,7 +83,7 @@ class BlastRadiusGraph extends StatelessWidget {
     }
 
     final nodes = <_PositionedNode>[];
-    final edges = <List<Offset>>[];
+    final edges = <_Edge>[];
 
     const center = Offset.zero;
     nodes.add(_PositionedNode(
@@ -105,7 +108,9 @@ class BlastRadiusGraph extends StatelessWidget {
         label: '${cat.label} (${cat.items.length})',
         isCenter: false,
       ));
-      edges.add([center, catPos]);
+      // A straight spoke reads cleanly here -- it's literally a radius of
+      // the category ring, so a curve would look like an arbitrary bend.
+      edges.add(_Edge(center, catPos, cat.color, curved: false));
 
       final shown = cat.items.take(_maxItemsPerCategory).toList();
       final overflow = cat.items.length - shown.length;
@@ -129,7 +134,10 @@ class BlastRadiusGraph extends StatelessWidget {
           isLeaf: true,
           isOverflow: isOverflow,
         ));
-        edges.add([catPos, itemPos]);
+        // A gentle bow rather than a straight line makes the branch read
+        // as a "connector" instead of a spike, and keeps a fan of leaves
+        // from looking like a sunburst of dead-straight rays.
+        edges.add(_Edge(catPos, itemPos, cat.color, curved: true));
       }
     }
 
@@ -144,13 +152,18 @@ class BlastRadiusGraph extends StatelessWidget {
         child: Stack(children: [
           Positioned.fill(
             child: CustomPaint(
-              painter: _EdgePainter(edges, center: const Offset(_canvasSize / 2, _canvasSize / 2)),
+              painter: _EdgePainter(
+                edges,
+                center: const Offset(_canvasSize / 2, _canvasSize / 2),
+                categoryRadius: _categoryRadius,
+                itemRadius: _itemRadius,
+              ),
             ),
           ),
           for (final n in nodes)
             Positioned(
-              left: _canvasSize / 2 + n.position.dx - (n.isLeaf ? 55 : n.size / 2),
-              top: _canvasSize / 2 + n.position.dy - (n.isLeaf ? 21 : n.size / 2),
+              left: _canvasSize / 2 + n.position.dx - (n.isLeaf ? 58 : n.size / 2),
+              top: _canvasSize / 2 + n.position.dy - (n.isLeaf ? 22 : n.size / 2),
               child: n.isLeaf ? _LeafChip(node: n) : _CircleNode(node: n),
             ),
         ]),
@@ -188,19 +201,63 @@ class _PositionedNode {
   });
 }
 
+class _Edge {
+  final Offset start;
+  final Offset end;
+  final Color color;
+  final bool curved;
+  _Edge(this.start, this.end, this.color, {required this.curved});
+}
+
 class _EdgePainter extends CustomPainter {
-  final List<List<Offset>> edges;
+  final List<_Edge> edges;
   final Offset center;
-  _EdgePainter(this.edges, {required this.center});
+  final double categoryRadius;
+  final double itemRadius;
+  _EdgePainter(this.edges, {required this.center, required this.categoryRadius, required this.itemRadius});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withOpacity(0.12)
-      ..strokeWidth = 1.2
+    // Faint concentric rings give the layout a sense of structure/depth
+    // (like radar range rings) instead of nodes floating in empty space.
+    final guidePaint = Paint()
+      ..color = Colors.white.withOpacity(0.045)
+      ..strokeWidth = 1
       ..style = PaintingStyle.stroke;
+    canvas.drawCircle(center, categoryRadius, guidePaint);
+    canvas.drawCircle(center, itemRadius, guidePaint);
+
     for (final e in edges) {
-      canvas.drawLine(center + e[0], center + e[1], paint);
+      final start = center + e.start;
+      final end = center + e.end;
+      final paint = Paint()
+        ..color = e.color.withOpacity(e.curved ? 0.22 : 0.38)
+        ..strokeWidth = e.curved ? 1.1 : 1.4
+        ..style = PaintingStyle.stroke;
+
+      if (!e.curved) {
+        canvas.drawLine(start, end, paint);
+        continue;
+      }
+
+      final mid = Offset((start.dx + end.dx) / 2, (start.dy + end.dy) / 2);
+      final dx = end.dx - start.dx;
+      final dy = end.dy - start.dy;
+      final len = math.sqrt(dx * dx + dy * dy);
+      var control = mid;
+      if (len > 0) {
+        // Perpendicular offset, always bowed the same rotational way, so
+        // every branch across the whole graph curves consistently rather
+        // than some bulging left and others right at random.
+        final nx = -dy / len;
+        final ny = dx / len;
+        final bend = len * 0.16;
+        control = Offset(mid.dx + nx * bend, mid.dy + ny * bend);
+      }
+      final path = Path()
+        ..moveTo(start.dx, start.dy)
+        ..quadraticBezierTo(control.dx, control.dy, end.dx, end.dy);
+      canvas.drawPath(path, paint);
     }
   }
 
@@ -208,10 +265,127 @@ class _EdgePainter extends CustomPainter {
   bool shouldRepaint(covariant _EdgePainter oldDelegate) => false;
 }
 
-void _showDetail(BuildContext context, String text) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(text), duration: const Duration(seconds: 4)),
-  );
+/// Shows a small floating card near the tapped point instead of a
+/// Material SnackBar pinned to the bottom of the screen -- a proper
+/// pop-out/tooltip feel that stays anchored to what was actually tapped,
+/// works the same however far down the (very tall) graph canvas that tap
+/// happened, and doesn't collide with anything else docked at the bottom
+/// of the page.
+void _showNodePopover(BuildContext context, Offset globalPosition, _PositionedNode node) {
+  final overlayState = Overlay.of(context);
+  final screenSize = MediaQuery.of(context).size;
+  const cardWidth = 260.0;
+
+  final maxLeft = math.max(12.0, screenSize.width - cardWidth - 12);
+  final left = (globalPosition.dx - cardWidth / 2).clamp(12.0, maxLeft);
+  // Prefer popping the card above the tap (keeps it clear of anything
+  // docked at the bottom); flip below only when there isn't room above.
+  final showBelow = globalPosition.dy < 160;
+
+  late OverlayEntry entry;
+  var removed = false;
+  void dismiss() {
+    if (!removed) {
+      removed = true;
+      entry.remove();
+    }
+  }
+
+  entry = OverlayEntry(builder: (_) {
+    return Stack(children: [
+      Positioned.fill(
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onTap: dismiss,
+        ),
+      ),
+      Positioned(
+        left: left,
+        top: showBelow ? globalPosition.dy + 20 : null,
+        bottom: showBelow ? null : screenSize.height - globalPosition.dy + 20,
+        width: cardWidth,
+        child: _NodePopoverCard(
+          label: node.label,
+          color: node.color,
+          icon: node.icon,
+          onDismiss: dismiss,
+        ),
+      ),
+    ]);
+  });
+  overlayState.insert(entry);
+}
+
+class _NodePopoverCard extends StatefulWidget {
+  final String label;
+  final Color color;
+  final IconData? icon;
+  final VoidCallback onDismiss;
+  const _NodePopoverCard({required this.label, required this.color, required this.onDismiss, this.icon});
+
+  @override
+  State<_NodePopoverCard> createState() => _NodePopoverCardState();
+}
+
+class _NodePopoverCardState extends State<_NodePopoverCard> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  Timer? _autoDismiss;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 170))..forward();
+    _autoDismiss = Timer(const Duration(seconds: 6), widget.onDismiss);
+  }
+
+  @override
+  void dispose() {
+    _autoDismiss?.cancel();
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ScaleTransition(
+      scale: CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack),
+      alignment: Alignment.topCenter,
+      child: FadeTransition(
+        opacity: CurvedAnimation(parent: _ctrl, curve: Curves.easeOut),
+        child: Material(
+          color: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+            decoration: BoxDecoration(
+              color: kSurface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border(left: BorderSide(color: widget.color, width: 3)),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withOpacity(0.45), blurRadius: 20, offset: const Offset(0, 8)),
+              ],
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (widget.icon != null) ...[
+                Icon(widget.icon, color: widget.color, size: 18),
+                const SizedBox(width: 8),
+              ],
+              Expanded(
+                child: Text(
+                  widget.label,
+                  style: const TextStyle(color: Colors.white, fontSize: 13, height: 1.35, fontWeight: FontWeight.w500),
+                ),
+              ),
+              const SizedBox(width: 6),
+              GestureDetector(
+                onTap: widget.onDismiss,
+                child: const Icon(Icons.close_rounded, color: Colors.white38, size: 16),
+              ),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _CircleNode extends StatelessWidget {
@@ -221,7 +395,7 @@ class _CircleNode extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => _showDetail(context, node.label),
+      onTapDown: (details) => _showNodePopover(context, details.globalPosition, node),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         Container(
           width: node.size,
@@ -230,12 +404,24 @@ class _CircleNode extends StatelessWidget {
             shape: BoxShape.circle,
             color: node.color.withOpacity(node.isCenter ? 0.18 : 0.15),
             border: Border.all(color: node.color, width: node.isCenter ? 2 : 1.5),
+            boxShadow: [
+              BoxShadow(
+                color: node.color.withOpacity(node.isCenter ? 0.35 : 0.2),
+                blurRadius: node.isCenter ? 26 : 14,
+                spreadRadius: node.isCenter ? 2 : 0,
+              ),
+            ],
           ),
           child: Icon(node.icon, color: node.color, size: node.isCenter ? 30 : 22),
         ),
-        const SizedBox(height: 4),
-        SizedBox(
-          width: 130,
+        const SizedBox(height: 6),
+        Container(
+          constraints: const BoxConstraints(maxWidth: 130),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: kBackground.withOpacity(0.55),
+            borderRadius: BorderRadius.circular(6),
+          ),
           child: Text(
             node.label,
             textAlign: TextAlign.center,
@@ -259,17 +445,21 @@ class _LeafChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final accent = node.isOverflow ? Colors.white24 : node.color;
     return GestureDetector(
-      onTap: () => _showDetail(context, node.label),
+      onTapDown: (details) => _showNodePopover(context, details.globalPosition, node),
       child: Container(
-        width: 110,
-        height: 42,
+        width: 116,
+        height: 44,
         alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
-          color: node.isOverflow ? kSurface2.withOpacity(0.6) : node.color.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: node.isOverflow ? Colors.white24 : node.color.withOpacity(0.5)),
+          color: node.isOverflow ? kSurface2.withOpacity(0.55) : kSurface.withOpacity(0.9),
+          borderRadius: BorderRadius.circular(10),
+          border: Border(left: BorderSide(color: accent, width: 3)),
+          boxShadow: [
+            BoxShadow(color: Colors.black.withOpacity(0.25), blurRadius: 8, offset: const Offset(0, 3)),
+          ],
         ),
         child: Text(
           node.label,

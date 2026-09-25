@@ -11,6 +11,7 @@ const kGreen      = Color(0xFF16A34A);
 const kOrange     = Color(0xFFD97706);
 const kRed        = Color(0xFFDC2626);
 const kPurple     = Color(0xFF7C3AED);
+const kTeal       = Color(0xFF14B8A6);
 const kBackground = Color(0xFF0F172A);
 const kSurface    = Color(0xFF1E293B);
 const kSurface2   = Color(0xFF334155);
