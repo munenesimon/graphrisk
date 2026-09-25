@@ -75,6 +75,8 @@ A three-layer adapter pattern (BaseConnector → per-vendor Adapter → CheckReg
 
 Adding a new vendor means writing one adapter file (~150 lines) and one registration line. The registry, graph write, and cascade logic never change.
 
+Credentials can be saved per tenant (Fernet-encrypted at rest, Neo4j-backed, owner/admin only) so a connector doesn't need its config re-entered on every run — a later run automatically merges in the saved values, and typing a new value for one run never overwrites what's saved unless you explicitly hit Save again. Saved values are never returned to the client; the API reports only which config keys are set. Live-verified end to end: saved Entra ID test credentials were picked up on a subsequent run with every field left blank (visible as a real, correctly-rejected OAuth request to Microsoft's token endpoint), and clearing them removed the saved state immediately, confirmed after a full logout/login cycle.
+
 ### Data Layer
 Real-world, authoritative data — not synthetic demo content.
 
@@ -192,6 +194,7 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 | Evidence origami | ✅ Proven with real graph data |
 | Vendor breach cascade | ✅ Proven with real graph data |
 | Universal connector pattern | ✅ Proven across 4 auth patterns |
+| Persistent connector credentials | ✅ Fernet-encrypted at rest (Neo4j-backed), owner/admin only, values never returned to the client — live-verified save → reuse → clear cycle in the Flutter UI |
 | Vulnerability-to-asset correlation | ✅ Automated — daily sync + at asset onboarding |
 | Flutter Web frontend | ✅ Live on Firebase Hosting |
 | Multi-tenancy | ✅ JWT-enforced tenant scoping on every data endpoint (PostgreSQL on Neon free tier) |
@@ -211,6 +214,7 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 - [ ] Wazuh connector live-data validation (pending a self-hosted instance)
 - [ ] CrowdStrike / Qualys connector adapters
 - [x] Connector management UI in Flutter
+- [x] Persistent encrypted connector credential storage
 - [ ] Graph canvas visualization for blast radius
 - [ ] CIS Controls commercial licensing review (required before paid use)
 
@@ -227,6 +231,7 @@ graphrisk/
 │   │   ├── connectors/     # Universal connector architecture
 │   │   │   ├── base.py     # BaseConnector (transport layer)
 │   │   │   ├── registry.py # CheckRegistry (orchestration)
+│   │   │   ├── crypto.py   # Fernet encryption for saved credentials
 │   │   │   └── adapters/   # Entra ID, AWS, Okta, Wazuh
 │   │   ├── db/             # SQLAlchemy models + Neon PostgreSQL
 │   │   └── graph/          # Neo4j connection + Cypher queries
