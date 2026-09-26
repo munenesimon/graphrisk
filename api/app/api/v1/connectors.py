@@ -10,6 +10,7 @@ this matches the same fix already applied to dashboard, assets, risks,
 controls, and blast_radius.
 """
 import logging
+import uuid
 
 from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
@@ -69,14 +70,44 @@ def _load_stored_config(tenant_id: str, connector_id: str) -> dict:
         return {}
 
 
+# Config keys that determine *where* a connector sends requests. These may
+# only ever come from a tenant's saved config (set by an owner/admin via
+# PUT /{connector_id}/config) -- never from a per-request override. Letting
+# a request body set one of these let any authenticated tenant member
+# redirect a connector's real, stored credentials to an attacker-controlled
+# host (credential exfiltration via the OAuth/basic-auth flow) and/or use
+# the backend as an open SSRF proxy. Matched by substring, case-insensitive,
+# so it also covers keys future adapters might introduce (endpoint_url,
+# webhook_host, etc.), not just today's base_url/api_url/org_url.
+_CONNECTION_KEY_MARKERS = ("url", "endpoint", "host", "domain")
+
+
+def _is_connection_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(marker in lowered for marker in _CONNECTION_KEY_MARKERS)
+
+
 def _merged_config(tenant_id: str, connector_id: str, override: dict) -> dict:
     """
-    Saved config, with any keys present in `override` taking precedence --
-    lets a caller run with saved credentials untouched, or temporarily
-    override one field (e.g. test a new secret) without re-saving.
+    Saved config, with any *non-connection* keys present in `override`
+    taking precedence -- lets a caller run with saved credentials
+    untouched, or temporarily override a value like a secret to test it,
+    without re-saving. Connection-endpoint keys (base_url/api_url/org_url
+    and similar -- see _CONNECTION_KEY_MARKERS) are always dropped from
+    `override`: they can only be set via the saved config, which requires
+    the owner/admin role.
     """
     stored = _load_stored_config(tenant_id, connector_id)
-    return {**stored, **{k: v for k, v in override.items() if v}}
+    safe_override = {
+        k: v for k, v in override.items() if v and not _is_connection_key(k)
+    }
+    rejected = sorted(k for k, v in override.items() if v and _is_connection_key(k))
+    if rejected:
+        logger.warning(
+            f"{connector_id}/{tenant_id}: ignored disallowed config override key(s) "
+            f"in run request: {rejected}"
+        )
+    return {**stored, **safe_override}
 
 
 # -- Mock adapter -- proves the architecture works end-to-end -----------------
@@ -242,7 +273,12 @@ async def run_check(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Check execution failed: {e}")
+        error_id = uuid.uuid4().hex[:12]
+        logger.exception(f"[{error_id}] run-check failed for check_id={check_id}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Check execution failed (ref: {error_id}) -- see server logs for details",
+        )
 
 
 @router.post("/run-connector/{connector_id}")
@@ -281,4 +317,9 @@ async def run_connector(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Connector run failed: {e}")
+        error_id = uuid.uuid4().hex[:12]
+        logger.exception(f"[{error_id}] run-connector failed for connector_id={connector_id}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Connector run failed (ref: {error_id}) -- see server logs for details",
+        )

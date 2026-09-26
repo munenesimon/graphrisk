@@ -5,15 +5,71 @@ Handles everything identical across every vendor: OAuth 2.0 token management,
 HTTP requests with retry/backoff, rate-limit handling, and pagination.
 Every per-vendor adapter inherits from this and only implements vendor-specific logic.
 """
+import ipaddress
+import socket
 import time
 import logging
 import requests
 from abc import ABC, abstractmethod
 from typing import Generator, Optional
+from urllib.parse import urlparse
 
 from .models import CheckResult
 
 logger = logging.getLogger(__name__)
+
+
+class UnsafeURLError(ValueError):
+    """Raised when a connector is about to call a URL that fails SSRF safety checks."""
+
+
+def _assert_safe_url(url: str) -> None:
+    """
+    Reject URLs that don't use http(s), or that resolve to a private,
+    loopback, link-local, or otherwise non-public IP address.
+
+    This is defense-in-depth against SSRF: the primary control is that
+    _merged_config() in the API layer never lets a request-body override
+    set a connection-endpoint config key (base_url/api_url/org_url/etc --
+    those only ever come from a tenant's saved, owner/admin-set config).
+    This check protects the same code path even if a future adapter or
+    config key introduces a URL that ends up attacker-influenceable, and
+    it blocks a *stored* config from ever being used to reach an internal
+    address such as a cloud metadata endpoint.
+
+    Note: this checks the hostname's current DNS resolution at call time.
+    It does not pin the resolved IP for the subsequent request, so it does
+    not fully close a DNS-rebinding attack by a host the caller already
+    controls (e.g. a malicious owner/admin's own saved base_url) -- it is
+    a safety net for accidental/unexpected internal targets, not a
+    guarantee against a trusted-but-malicious config author.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise UnsafeURLError(f"Refusing to call URL with disallowed scheme: {parsed.scheme!r}")
+    hostname = parsed.hostname
+    if not hostname:
+        raise UnsafeURLError("Refusing to call URL with no hostname")
+
+    try:
+        addrinfo = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as e:
+        raise UnsafeURLError(f"Refusing to call URL -- could not resolve host {hostname!r}: {e}")
+
+    for family, _, _, _, sockaddr in addrinfo:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise UnsafeURLError(
+                f"Refusing to call URL {url!r} -- host {hostname!r} resolves to "
+                f"non-public address {ip}"
+            )
 
 
 class CheckError:
@@ -103,6 +159,7 @@ class BaseConnector(ABC):
 
     # ── HTTP methods with retry + rate-limit handling ───────────────────────
     def _get(self, url: str, params: Optional[dict] = None, retries: int = 3) -> dict:
+        _assert_safe_url(url)
         self._ensure_token()
         headers = {"Authorization": f"Bearer {self._token}"}
         for attempt in range(retries):
@@ -127,6 +184,7 @@ class BaseConnector(ABC):
         raise RuntimeError(f"Request failed after {retries} attempts: {url}")
 
     def _post(self, url: str, json_body: Optional[dict] = None, retries: int = 3) -> dict:
+        _assert_safe_url(url)
         self._ensure_token()
         headers = {"Authorization": f"Bearer {self._token}"}
         for attempt in range(retries):
@@ -170,6 +228,7 @@ class BaseConnector(ABC):
         self, token_url: str, client_id: str, client_secret: str, scope: str
     ) -> None:
         """Standard OAuth 2.0 client credentials flow, shared by most vendors."""
+        _assert_safe_url(token_url)
         r = self._session.post(token_url, data={
             "grant_type":    "client_credentials",
             "client_id":     client_id,
