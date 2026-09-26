@@ -30,3 +30,8 @@ test_ds08.py
 check_progress.py
 
 login_render.json
+
+# Test artifacts
+.coverage
+htmlcov/
+.pytest_cache/

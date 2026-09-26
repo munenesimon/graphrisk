@@ -56,6 +56,11 @@ def _assert_safe_url(url: str) -> None:
     except socket.gaierror as e:
         raise UnsafeURLError(f"Refusing to call URL -- could not resolve host {hostname!r}: {e}")
 
+    # Shared Address Space (RFC 6598, 100.64.0.0/10 -- used for carrier-grade
+    # NAT) isn't covered by ipaddress.IPv4Address.is_private in every Python
+    # version, so it's checked explicitly alongside the stdlib flags below.
+    _CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
     for family, _, _, _, sockaddr in addrinfo:
         ip = ipaddress.ip_address(sockaddr[0])
         if (
@@ -65,6 +70,7 @@ def _assert_safe_url(url: str) -> None:
             or ip.is_reserved
             or ip.is_multicast
             or ip.is_unspecified
+            or (ip.version == 4 and ip in _CGNAT)
         ):
             raise UnsafeURLError(
                 f"Refusing to call URL {url!r} -- host {hostname!r} resolves to "
