@@ -91,7 +91,16 @@ void main() {
       await tester.tap(find.text('Use demo credentials'));
       await tester.pump();
 
-      expect(find.text('demo@graphrisk.dev'), findsOneWidget);
+      // find.text() only matches Text/RichText widgets, not the live value
+      // inside a TextFormField's EditableText -- the "Email"/"Password"
+      // labels are findable as text, but a filled-in value never is. Read
+      // the controller directly instead.
+      final emailField =
+          tester.widget<TextFormField>(find.widgetWithText(TextFormField, 'Email'));
+      final passwordField =
+          tester.widget<TextFormField>(find.widgetWithText(TextFormField, 'Password'));
+      expect(emailField.controller!.text, 'demo@graphrisk.dev');
+      expect(passwordField.controller!.text, 'demopass123');
       expect(find.text('Organization name'), findsNothing); // back in log-in mode
     });
 
