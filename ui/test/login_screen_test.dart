@@ -88,7 +88,16 @@ void main() {
       await tester.tap(find.text('Create account'));
       await tester.pump();
 
-      await tester.tap(find.text('Use demo credentials'));
+      // In register mode the card is taller than the default 800x600 test
+      // surface, so "Use demo credentials" (below the card) sits below the
+      // fold inside the SingleChildScrollView. Scroll it into view first --
+      // otherwise the tap lands outside the render view and silently misses,
+      // leaving the fields empty.
+      final demoLinkFinder = find.text('Use demo credentials');
+      await tester.ensureVisible(demoLinkFinder);
+      await tester.pumpAndSettle();
+
+      await tester.tap(demoLinkFinder);
       await tester.pump();
 
       // find.text() only matches Text/RichText widgets, not the live value
