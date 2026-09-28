@@ -28,7 +28,7 @@ still never show up in the graph. Override via
 config["control_titles"] = {"wazuh_agent_connectivity": "...", ...}
 if your graph uses different names.
 """
-from ..base import BaseConnector
+from ..base import BaseConnector, _assert_safe_url
 from ..models import CheckResult, CheckStatus, CheckCategory
 
 SUPPORTED_CHECKS = [
@@ -54,12 +54,18 @@ class WazuhAdapter(BaseConnector):
 
     def authenticate(self) -> None:
         base_url = self.config["api_url"].rstrip("/")
+        auth_url = f"{base_url}/security/user/authenticate"
+        # Self-hosted by design: a real customer's manager legitimately
+        # lives on a private network, so private ranges are allowed here --
+        # but loopback/link-local/metadata/reserved/CGNAT are still always
+        # rejected by _assert_safe_url regardless of allow_private.
+        _assert_safe_url(auth_url, allow_private=True)
         # Self-hosted managers commonly run a self-signed cert (default
         # in most Wazuh installs); verify_ssl defaults to True and has to
         # be explicitly opted out per-tenant, never hardcoded off.
         verify = self.config.get("verify_ssl", True)
         r = self._session.post(
-            f"{base_url}/security/user/authenticate",
+            auth_url,
             auth=(self.config["username"], self.config["password"]),
             verify=verify,
             timeout=30,
@@ -77,13 +83,16 @@ class WazuhAdapter(BaseConnector):
         """
         self._ensure_token()
         base_url = self.config["api_url"].rstrip("/")
+        full_url = f"{base_url}{path}"
+        # Same allow_private reasoning as authenticate() above.
+        _assert_safe_url(full_url, allow_private=True)
         verify = self.config.get("verify_ssl", True)
         headers = {"Authorization": f"Bearer {self._token}"}
-        r = self._session.get(f"{base_url}{path}", headers=headers, params=params, verify=verify, timeout=30)
+        r = self._session.get(full_url, headers=headers, params=params, verify=verify, timeout=30)
         if r.status_code == 401:
             self.authenticate()
             headers = {"Authorization": f"Bearer {self._token}"}
-            r = self._session.get(f"{base_url}{path}", headers=headers, params=params, verify=verify, timeout=30)
+            r = self._session.get(full_url, headers=headers, params=params, verify=verify, timeout=30)
         r.raise_for_status()
         return r.json()
 

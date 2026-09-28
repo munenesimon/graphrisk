@@ -140,6 +140,27 @@ class TestAssertSafeUrl:
         so they're rejected the same as real private space."""
         assert ipaddress.ip_address("203.0.113.10").is_private is True
 
+    def test_allow_private_permits_ordinary_rfc1918_targets(self):
+        """Self-hosted-by-design connectors (Wazuh) opt into allow_private
+        so a real customer's on-prem manager, which legitimately lives on
+        a private network, isn't rejected."""
+        with patch("app.connectors.base.socket.getaddrinfo", side_effect=_mock_getaddrinfo({"wazuh-manager.internal": "192.168.1.50"})):
+            _assert_safe_url("https://wazuh-manager.internal:55000/security/user/authenticate", allow_private=True)  # must not raise
+
+    @pytest.mark.parametrize("host,ip", [
+        ("metadata.internal", "169.254.169.254"),  # cloud metadata endpoint -- link-local
+        ("localhost.attacker.com", "127.0.0.1"),   # loopback
+        ("carrier-nat.attacker.com", "100.64.0.1"),  # CGNAT
+    ])
+    def test_allow_private_still_rejects_always_unsafe_ranges(self, host, ip):
+        """allow_private only widens the exception for ordinary private
+        space -- loopback/link-local/CGNAT (which covers the cloud metadata
+        endpoint) are never a legitimate manager address, self-hosted or
+        not, and stay rejected even with allow_private=True."""
+        with patch("app.connectors.base.socket.getaddrinfo", side_effect=_mock_getaddrinfo({host: ip})):
+            with pytest.raises(UnsafeURLError):
+                _assert_safe_url(f"http://{host}/x", allow_private=True)
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # End-to-end: the actual exploit, run against the real endpoint, must fail

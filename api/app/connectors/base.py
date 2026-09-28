@@ -23,10 +23,10 @@ class UnsafeURLError(ValueError):
     """Raised when a connector is about to call a URL that fails SSRF safety checks."""
 
 
-def _assert_safe_url(url: str) -> None:
+def _assert_safe_url(url: str, allow_private: bool = False) -> None:
     """
-    Reject URLs that don't use http(s), or that resolve to a private,
-    loopback, link-local, or otherwise non-public IP address.
+    Reject URLs that don't use http(s), or that resolve to a non-public IP
+    address.
 
     This is defense-in-depth against SSRF: the primary control is that
     _merged_config() in the API layer never lets a request-body override
@@ -36,6 +36,16 @@ def _assert_safe_url(url: str) -> None:
     config key introduces a URL that ends up attacker-influenceable, and
     it blocks a *stored* config from ever being used to reach an internal
     address such as a cloud metadata endpoint.
+
+    allow_private: set only by self-hosted-by-design connectors (e.g.
+    Wazuh) whose whole point is that config["api_url"] legitimately
+    targets the customer's own private network. Even with this set,
+    loopback/link-local/reserved/multicast/unspecified/CGNAT addresses
+    are still always rejected -- those are never a legitimate manager
+    address for any connector, self-hosted or not, and link-local in
+    particular is what covers the cloud metadata endpoint
+    (169.254.169.254). This flag only widens the exception for ordinary
+    RFC1918 private ranges.
 
     Note: this checks the hostname's current DNS resolution at call time.
     It does not pin the resolved IP for the subsequent request, so it does
@@ -63,15 +73,15 @@ def _assert_safe_url(url: str) -> None:
 
     for family, _, _, _, sockaddr in addrinfo:
         ip = ipaddress.ip_address(sockaddr[0])
-        if (
-            ip.is_private
-            or ip.is_loopback
+        always_unsafe = (
+            ip.is_loopback
             or ip.is_link_local
             or ip.is_reserved
             or ip.is_multicast
             or ip.is_unspecified
             or (ip.version == 4 and ip in _CGNAT)
-        ):
+        )
+        if always_unsafe or (ip.is_private and not allow_private):
             raise UnsafeURLError(
                 f"Refusing to call URL {url!r} -- host {hostname!r} resolves to "
                 f"non-public address {ip}"
