@@ -56,6 +56,34 @@ class CheckResult:
     # Neo4j control mapping — links this result to a Control node by title
     control_title: str           = ""
 
+    # Assets this check's raw data reveals (e.g. one per Wazuh agent, one
+    # per scanned host) -- optional, empty for connectors that don't map
+    # cleanly onto individual devices/systems (Entra ID, Okta, AWS...).
+    # CheckRegistry upserts these into the graph the same way it writes
+    # the check result itself, keyed on (tenant_id, name) so re-running a
+    # connector doesn't create duplicates. Each dict may contain: name
+    # (required), asset_type, criticality, environment, vendor, product,
+    # holds_personal_data -- same shape as AssetCreate in api/v1/assets.py --
+    # plus an optional "vulnerabilities" list of CVE ids the adapter has
+    # *actually observed* on that specific device (as opposed to the
+    # generic vendor/product correlation CORRELATE_NEW_ASSET_AGAINST_ALL_
+    # VULNERABILITIES already runs once for every new asset). Each entry is
+    # either:
+    #   - a plain string CVE id ("CVE-2024-1234") -- linked only if that CVE
+    #     is already in our ingested NVD/CISA KEV catalog; a no-op otherwise,
+    #     same as the manual "link vulnerability" UI action.
+    #   - a dict with real finding detail: {"cve_id": ..., "description":
+    #     ..., "cvss_score": ..., "severity": ..., "published_at": ...,
+    #     "source": ...} (only "cve_id" required) -- CheckRegistry creates a
+    #     real Vulnerability node from this when one doesn't already exist,
+    #     then links it. This is the shape to use for a scanner reporting
+    #     findings NVD/CISA KEV likely never covers, e.g. Wazuh's
+    #     indexer-backed vulnerability detection drawing on OSV/GitHub
+    #     Security Advisories for OS-package and npm/pip-style CVEs.
+    # Adapter-agnostic either way -- Qualys or CrowdStrike Spotlight could
+    # report through the exact same field with no registry changes needed.
+    discovered_assets: list[dict] = field(default_factory=list)
+
     @property
     def pass_rate(self) -> float:
         if self.total_count == 0:

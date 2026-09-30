@@ -22,7 +22,15 @@ class ConnectorField {
   final String label;
   final bool secret;
   final String? hint;
-  const ConnectorField(this.key, this.label, {this.secret = false, this.hint});
+  // True for a field that's optional on top of a connector's baseline
+  // auth (e.g. Wazuh's indexer credentials, needed only for real
+  // per-device vulnerability detection, not for the connector to run at
+  // all) -- the UI groups these behind a collapsed "optional" disclosure
+  // instead of listing every connector's full field set flat, so a
+  // connector that only uses its baseline fields still looks the same
+  // as it always has.
+  final bool advanced;
+  const ConnectorField(this.key, this.label, {this.secret = false, this.hint, this.advanced = false});
 }
 
 class ConnectorSpec {
@@ -35,6 +43,13 @@ class ConnectorSpec {
   // against a live vendor instance yet (e.g. Wazuh, pending a self-hosted
   // instance). Purely informational -- doesn't gate whether it can be run.
   final bool liveVerified;
+  // Heading + one-line explainer shown above any `advanced: true` fields,
+  // which the screen renders collapsed by default. Generic defaults so a
+  // connector that grows an optional field later doesn't need new UI --
+  // override per-connector (see Wazuh below) when the generic wording
+  // doesn't fit.
+  final String advancedLabel;
+  final String? advancedDescription;
 
   const ConnectorSpec({
     required this.id,
@@ -42,6 +57,8 @@ class ConnectorSpec {
     required this.authPattern,
     required this.fields,
     this.liveVerified = true,
+    this.advancedLabel = 'Advanced (optional)',
+    this.advancedDescription,
   });
 }
 
@@ -88,8 +105,22 @@ const List<ConnectorSpec> kConnectorSpecs = [
       ConnectorField('api_url', 'Manager API URL', hint: 'https://your-manager:55000'),
       ConnectorField('username', 'Username'),
       ConnectorField('password', 'Password', secret: true),
+      // Optional: real per-device CVE detection via the Wazuh indexer, a
+      // genuinely separate service from the manager above (its own auth,
+      // commonly the same host on port 9200). Leaving these blank keeps
+      // today's behavior -- agents still become Assets, just with no
+      // vulnerabilities attached. See WazuhAdapter._effective_indexer_url.
+      ConnectorField('indexer_url', 'Indexer URL (optional)',
+          hint: 'Defaults to the manager host on port 9200 -- set only if different',
+          advanced: true),
+      ConnectorField('indexer_username', 'Indexer username', advanced: true),
+      ConnectorField('indexer_password', 'Indexer password', secret: true, advanced: true),
     ],
     liveVerified: false,
+    advancedLabel: 'Vulnerability detection (optional)',
+    advancedDescription: 'Pulls real per-device CVE findings from the Wazuh indexer, a separate '
+        "service from the manager above. Leave blank to skip -- agents still become Assets either way, "
+        'just without vulnerabilities attached.',
   ),
   ConnectorSpec(
     id: 'crowdstrike',

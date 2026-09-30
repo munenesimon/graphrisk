@@ -51,6 +51,7 @@ class CheckRegistry:
 
         result = adapter.run_check(check_id)
         self._write_to_graph(result)
+        self._ingest_assets(result, tenant_id)
         return result
 
     def run_all(
@@ -68,6 +69,7 @@ class CheckRegistry:
         results, errors = adapter.run_all_checks()
         for result in results:
             self._write_to_graph(result)
+            self._ingest_assets(result, tenant_id)
         return results, errors
 
     def _write_to_graph(self, result: CheckResult) -> None:
@@ -84,6 +86,191 @@ class CheckRegistry:
             })
         except Exception as e:
             logger.error(f"Graph write failed for {result.check_id}: {e}")
+
+    def _ingest_assets(self, result: CheckResult, tenant_id: str) -> None:
+        """
+        Upsert result.discovered_assets into the graph, reusing the exact
+        same queries the Assets REST API uses -- CREATE_ASSET plus its two
+        onboarding side effects for a new asset, LINK_VULNERABILITY_TO_ASSET
+        for anything the adapter itself already knows is present on that
+        asset -- so a connector-discovered asset and its vulnerabilities
+        behave identically to what a person adds by hand through the UI:
+        same CVE correlation, same risk cascade, same shape the
+        Assets/Dashboard/Blast-Radius screens expect.
+
+        This is deliberately adapter-agnostic: any connector can populate
+        `vulnerabilities` (a list of CVE ids) on a discovered_assets entry
+        once it has real per-device findings to report, not just Wazuh.
+        Today that's Wazuh's indexer-backed vulnerability detection; a scanner
+        like Qualys or CrowdStrike's Spotlight could report through the exact
+        same field with no registry changes needed.
+
+        De-duplicated on (tenant_id, name) in Python rather than a Cypher
+        MERGE: re-running a connector (e.g. Wazuh reporting the same laptop
+        every run) must not create a fresh Asset node each time, and reading
+        the existing list first also means a completely wrong/misspelled
+        asset_type here can't corrupt an asset a person already created and
+        is managing by hand. Vulnerability links, by contrast, are relinked
+        on every run regardless of whether the asset was just created or
+        already existed -- LINK_VULNERABILITY_TO_ASSET is the same
+        idempotent MERGE the REST endpoint relies on, so a CVE a device is
+        still exposed to simply stays linked; nothing here removes a link
+        for a CVE that stopped showing up in one run's findings, since a
+        transient scan gap shouldn't read as "resolved."
+
+        A dict-shaped (real finding detail) vulnerability also goes through
+        _ensure_risk_for_finding below when it's Critical/High severity --
+        CORRELATE_NEW_ASSET_AGAINST_ALL_VULNERABILITIES and
+        LINK_VULNERABILITY_TO_ASSET only ever create (Vulnerability)-
+        [:EXPOSES]->(Asset) edges, but Blast Radius and Vulnerability
+        Impact both walk (Risk)-[:IMPACTS]->(Asset) instead, and nothing
+        else creates that edge for a brand-new asset (CASCADE_RISK_ON_NEW_
+        ASSET only rescales a Risk that's already linked). Without this
+        step a connector-discovered device's real CVEs would be attached
+        to it but invisible to both of those views.
+        """
+        if not result.discovered_assets:
+            return
+        try:
+            import uuid
+            from app.graph.connection import run_query, run_write
+            # Imported as the `queries` module (like api/v1/assets.py does),
+            # not `from graphrisk_core.queries import CREATE_ASSET` -- the
+            # latter would raise ImportError under tests/conftest.py's stub,
+            # which only gives `app.graph.queries` a fallback for unknown
+            # attributes, not the raw graphrisk_core.queries module itself.
+            from app.graph import queries
+
+            existing_ids_by_name = {
+                a["name"]: a.get("id")
+                for a in run_query(queries.GET_ALL_ASSETS, {"tenant_id": tenant_id})
+            }
+            for asset in result.discovered_assets:
+                name = asset.get("name")
+                if not name:
+                    continue
+                asset_id = existing_ids_by_name.get(name)
+                if asset_id is None:
+                    asset_id = str(uuid.uuid4())
+                    run_write(queries.CREATE_ASSET, {
+                        "id": asset_id,
+                        "name": name,
+                        "asset_type": asset.get("asset_type", "Endpoint"),
+                        "criticality": asset.get("criticality", "Medium"),
+                        "owner": asset.get("owner", f"{result.source} connector"),
+                        "vendor": asset.get("vendor"),
+                        "product": asset.get("product"),
+                        "holds_personal_data": asset.get("holds_personal_data", False),
+                        "environment": asset.get("environment", "Production"),
+                        "tenant_id": tenant_id,
+                    })
+                    # Same onboarding side effects as POST /assets/ -- no-ops
+                    # immediately if vendor/product weren't set on this asset.
+                    run_write(queries.CORRELATE_NEW_ASSET_AGAINST_ALL_VULNERABILITIES, {
+                        "asset_id": asset_id, "tenant_id": tenant_id,
+                    })
+                    run_write(queries.CASCADE_RISK_ON_NEW_ASSET, {
+                        "asset_id": asset_id, "tenant_id": tenant_id,
+                    })
+                    existing_ids_by_name[name] = asset_id
+
+                for vuln in asset.get("vulnerabilities", []):
+                    # A plain CVE id string means "link this if we already
+                    # have it cataloged" (e.g. from NVD/CISA KEV ingestion);
+                    # a dict means the adapter has real finding detail
+                    # (severity, CVSS, description...) and wants a
+                    # Vulnerability node created from it when one doesn't
+                    # already exist -- see MERGE_VULNERABILITY_FROM_FINDING's
+                    # own docstring for why that's ON CREATE-only.
+                    if isinstance(vuln, dict):
+                        cve_id = vuln.get("cve_id")
+                    else:
+                        cve_id = vuln
+                    if not cve_id:
+                        continue
+                    if isinstance(vuln, dict):
+                        merged = run_write(queries.MERGE_VULNERABILITY_FROM_FINDING, {
+                            "cve_id": cve_id,
+                            "description": vuln.get("description", ""),
+                            "cvss_score": vuln.get("cvss_score", 0.0),
+                            "severity": vuln.get("severity", "Unknown"),
+                            "published_at": vuln.get("published_at", ""),
+                            "source": vuln.get("source", result.source),
+                        })
+                        self._ensure_risk_for_finding(vuln, merged, asset_id, tenant_id)
+                    run_write(queries.LINK_VULNERABILITY_TO_ASSET, {
+                        "asset_id": asset_id, "tenant_id": tenant_id, "cve_id": cve_id,
+                    })
+        except Exception as e:
+            logger.error(f"Asset ingestion failed for {result.check_id}: {e}")
+
+    # Severity -> (likelihood, impact) for a freshly-created Risk, on the
+    # same 1-5 scale seed_demo.py's hand-authored risks use (e.g. "Identity
+    # Compromise Risk" is likelihood=4, impact=5). Only Critical/High get a
+    # Risk at all -- matches Wazuh's own DEFAULT_MIN_VULNERABILITY_SEVERITIES
+    # cutoff, and the same reasoning applies to any future adapter: a
+    # Medium/Low finding still becomes a Vulnerability node linked to the
+    # asset (EXPOSES), it just doesn't cascade into a Risk.
+    _RISK_PROFILE_BY_SEVERITY = {
+        "Critical": {"likelihood": 4, "impact": 5},
+        "High":     {"likelihood": 3, "impact": 4},
+    }
+    _RANSOMWARE_RISK_TITLE = "Ransomware Infection Risk"
+    _GENERIC_VULNERABILITY_RISK_TITLE = "Unpatched Vulnerability Risk"
+
+    def _ensure_risk_for_finding(self, vuln: dict, merge_result: list, asset_id: str, tenant_id: str) -> None:
+        """
+        Closes a gap CASCADE_RISK_ON_NEW_ASSET doesn't: that query only
+        rescales a Risk already linked to an asset via IMPACTS, it never
+        creates that link (see its own comment in graphrisk-core) -- so
+        without this, a connector-reported CVE gets attached to an asset
+        (EXPOSES) but stays invisible to both Blast Radius and
+        Vulnerability Impact, which walk (Risk)-[:IMPACTS]->(Asset), not
+        (Vulnerability)-[:EXPOSES]->(Asset). Discovered while investigating
+        why a live Wazuh-ingested device wasn't showing up in Blast Radius
+        under any control.
+
+        A ransomware-flagged CVE (per merge_result's ransomware_use --
+        see MERGE_VULNERABILITY_FROM_FINDING's docstring for where that
+        comes from) rolls into "Ransomware Infection Risk" specifically,
+        so it reuses whatever Control a tenant already has mitigating that
+        risk (e.g. the demo seed's EDR control) instead of landing as a
+        new, orphaned risk no Control's Blast Radius would ever reach.
+        Everything else -- the common case, since most CVEs aren't
+        ransomware-associated -- rolls into a generic "Unpatched
+        Vulnerability Risk", which starts unmitigated until a human links
+        a Control to it. That's an honest gap, not a bug to paper over:
+        nothing in the tenant's graph actually claims to cover it yet.
+
+        Only ever called for a dict-shaped (real finding detail) entry --
+        a plain CVE-id string carries no severity here to gate on, so it
+        stays link-only exactly as before (see the caller).
+        """
+        severity = vuln.get("severity", "Unknown")
+        profile = self._RISK_PROFILE_BY_SEVERITY.get(severity)
+        if not profile:
+            return
+        ransomware_use = merge_result[0].get("ransomware_use") if merge_result else None
+        if ransomware_use:
+            title = self._RANSOMWARE_RISK_TITLE
+            description = "Risk of ransomware encrypting critical business data and systems"
+        else:
+            title = self._GENERIC_VULNERABILITY_RISK_TITLE
+            description = f"Risk of exploitation of {vuln.get('cve_id', 'an unpatched vulnerability')} or similar unpatched findings"
+
+        import uuid
+        from app.graph.connection import run_write
+        from app.graph import queries
+        run_write(queries.ENSURE_RISK_FOR_VULNERABILITY, {
+            "id": str(uuid.uuid4()),
+            "asset_id": asset_id,
+            "tenant_id": tenant_id,
+            "title": title,
+            "description": description,
+            "likelihood": profile["likelihood"],
+            "impact": profile["impact"],
+            "owner": "Security Team",
+        })
 
     @property
     def registered_connectors(self) -> list[str]:

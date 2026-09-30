@@ -32,6 +32,10 @@ class _ConnectorsScreenState extends State<ConnectorsScreen> {
   Map<String, List<String>> _checksByConnector = {};
 
   String? _expandedId;
+  // connector_id -> whether its collapsed "advanced" field group (see
+  // ConnectorField.advanced) is currently open. Separate from _expandedId
+  // so collapsing/reopening the whole card doesn't lose this.
+  final Set<String> _expandedAdvanced = {};
   final Map<String, Map<String, TextEditingController>> _controllers = {};
   final Set<String> _running = {};
   final Set<String> _saving = {};
@@ -274,7 +278,11 @@ class _ConnectorsScreenState extends State<ConnectorsScreen> {
               result: _lastResult[id],
               error: _lastError[id],
               controllers: _controllersFor(spec),
+              advancedExpanded: _expandedAdvanced.contains(id),
               onToggle: () => setState(() => _expandedId = _expandedId == id ? null : id),
+              onToggleAdvanced: () => setState(() {
+                if (!_expandedAdvanced.add(id)) _expandedAdvanced.remove(id);
+              }),
               onRun: () => _run(spec),
               onSave: () => _save(spec),
               onClearSaved: () => _clearSaved(spec),
@@ -297,7 +305,9 @@ class _ConnectorCard extends StatelessWidget {
   final Map<String, dynamic>? result;
   final String? error;
   final Map<String, TextEditingController> controllers;
+  final bool advancedExpanded;
   final VoidCallback onToggle;
+  final VoidCallback onToggleAdvanced;
   final VoidCallback onRun;
   final VoidCallback onSave;
   final VoidCallback onClearSaved;
@@ -314,14 +324,48 @@ class _ConnectorCard extends StatelessWidget {
     required this.result,
     required this.error,
     required this.controllers,
+    required this.advancedExpanded,
     required this.onToggle,
+    required this.onToggleAdvanced,
     required this.onRun,
     required this.onSave,
     required this.onClearSaved,
   });
 
+  Widget _buildField(ConnectorField f, List<String> savedKeys) {
+    final isSaved = savedKeys.contains(f.key);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: TextField(
+        controller: controllers[f.key],
+        obscureText: f.secret,
+        enabled: canRun && !running && !saving && !deleting,
+        style: const TextStyle(color: Colors.white, fontSize: 13),
+        decoration: InputDecoration(
+          labelText: f.label,
+          hintText: isSaved ? 'Saved -- leave blank to keep it' : f.hint,
+          suffixIcon: isSaved
+              ? const Padding(
+                  padding: EdgeInsets.only(right: 4),
+                  child: Icon(Icons.check_circle, color: kGreen, size: 16),
+                )
+              : null,
+          labelStyle: const TextStyle(color: Colors.white38, fontSize: 12),
+          hintStyle: TextStyle(color: isSaved ? kGreen.withOpacity(0.6) : Colors.white24, fontSize: 12),
+          filled: true,
+          fillColor: kSurface2.withOpacity(0.4),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final primaryFields = spec.fields.where((f) => !f.advanced).toList();
+    final advancedFields = spec.fields.where((f) => f.advanced).toList();
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
@@ -391,41 +435,39 @@ class _ConnectorCard extends StatelessWidget {
                   child: Text(humanizeCheckId(c), style: const TextStyle(color: Colors.white60, fontSize: 11)),
                 )).toList(),
               ),
-              if (spec.fields.isNotEmpty) ...[
+              if (primaryFields.isNotEmpty) ...[
                 const SizedBox(height: 16),
-                ...spec.fields.map((f) {
-                  final isSaved = savedKeys.contains(f.key);
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: TextField(
-                      controller: controllers[f.key],
-                      obscureText: f.secret,
-                      enabled: canRun && !running && !saving && !deleting,
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
-                      decoration: InputDecoration(
-                        labelText: f.label,
-                        hintText: isSaved ? 'Saved -- leave blank to keep it' : f.hint,
-                        suffixIcon: isSaved
-                            ? const Padding(
-                                padding: EdgeInsets.only(right: 4),
-                                child: Icon(Icons.check_circle, color: kGreen, size: 16),
-                              )
-                            : null,
-                        labelStyle: const TextStyle(color: Colors.white38, fontSize: 12),
-                        hintStyle: TextStyle(color: isSaved ? kGreen.withOpacity(0.6) : Colors.white24, fontSize: 12),
-                        filled: true,
-                        fillColor: kSurface2.withOpacity(0.4),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                        isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                      ),
-                    ),
-                  );
-                }),
-              ] else if (canRun) ...[
+                ...primaryFields.map((f) => _buildField(f, savedKeys)),
+              ] else if (canRun && advancedFields.isEmpty) ...[
                 const SizedBox(height: 16),
                 const Text('No credentials needed -- this adapter has nothing to configure.',
                     style: TextStyle(color: Colors.white38, fontSize: 11)),
+              ],
+              if (advancedFields.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                InkWell(
+                  onTap: onToggleAdvanced,
+                  borderRadius: BorderRadius.circular(6),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Row(children: [
+                      Icon(advancedExpanded ? Icons.expand_less : Icons.expand_more,
+                          color: Colors.white38, size: 16),
+                      const SizedBox(width: 4),
+                      Text(spec.advancedLabel,
+                          style: const TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600)),
+                    ]),
+                  ),
+                ),
+                if (advancedExpanded) ...[
+                  if (spec.advancedDescription != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Text(spec.advancedDescription!,
+                          style: const TextStyle(color: Colors.white38, fontSize: 11, height: 1.4)),
+                    ),
+                  ...advancedFields.map((f) => _buildField(f, savedKeys)),
+                ],
               ],
               const SizedBox(height: 12),
               Wrap(spacing: 10, runSpacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: [
