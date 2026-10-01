@@ -18,6 +18,11 @@ Config, all via env vars so nothing here is hardcoded to one deployment:
                       configured (Render does; local dev usually doesn't --
                       see app/auth/api_key.py). Left unset, no X-API-Key
                       header is sent at all.
+  MAINTENANCE_TOKEN   Required to write to the demo tenant, which the API
+                      keeps read-only for public visitors (see
+                      app/auth/read_only.py). Must match the server's own
+                      MAINTENANCE_TOKEN env var. For a local dev server you
+                      can instead set READ_ONLY_TENANTS= (empty) in .env.
 
 To reseed the LIVE public demo (not just a local dev DB), run with
 GRAPHRISK_BASE_URL and GRAPHRISK_API_KEY set to the deployed values.
@@ -41,6 +46,7 @@ DEMO_EMAIL    = os.environ.get("DEMO_EMAIL", "demo@graphrisk.dev")
 DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "demopass123")
 DEMO_TENANT_NAME = os.environ.get("DEMO_TENANT_NAME", "Demo Tenant")
 API_KEY       = os.environ.get("GRAPHRISK_API_KEY")  # optional -- see docstring
+MAINTENANCE_TOKEN = os.environ.get("MAINTENANCE_TOKEN")  # see docstring
 
 _token = None
 
@@ -51,6 +57,8 @@ def _headers():
         h["Authorization"] = f"Bearer {_token}"
     if API_KEY:
         h["X-API-Key"] = API_KEY
+    if MAINTENANCE_TOKEN:
+        h["X-Maintenance-Token"] = MAINTENANCE_TOKEN
     return h
 
 

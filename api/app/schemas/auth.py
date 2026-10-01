@@ -24,3 +24,7 @@ class TokenResponse(BaseModel):
     tenant_id: str
     graph_tenant_id: str
     role: str
+    # True for the shared public demo: everything is viewable, nothing can
+    # be changed through the API (see app/auth/read_only.py). Lets the UI
+    # say so up front instead of only after a refused save.
+    read_only: bool = False

@@ -54,6 +54,10 @@ os.environ.setdefault("NEO4J_USER", "neo4j")
 os.environ.setdefault("NEO4J_PASSWORD", "test-password-not-real")
 os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.pop("GRAPHRISK_API_KEY", None)
+# The demo tenant is read-only by default (app/auth/read_only.py), but most
+# tests act as a "demo"-tenant user via as_user() -- keep the lock off for
+# the suite; tests/test_read_only_demo.py turns it on explicitly.
+os.environ["READ_ONLY_TENANTS"] = ""
 
 # ── Stand in for the private graphrisk_core package (see docstring) ─────────
 if "graphrisk_core" not in sys.modules:

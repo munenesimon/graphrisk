@@ -80,8 +80,12 @@ final _router = GoRouter(
     GoRoute(
       path: '/login',
       builder: (context, state) => LoginScreen(
+        // A distinct key per mode, so switching from /login to
+        // /login?register=1 builds a fresh form in the right mode.
+        key: ValueKey('login-${state.uri.queryParameters['register'] ?? ''}'),
         onAuthenticated: _auth.authenticated,
         sessionExpired: _auth.sessionExpired,
+        initialRegisterMode: state.uri.queryParameters['register'] == '1',
       ),
     ),
     ShellRoute(
@@ -215,7 +219,49 @@ class MainShell extends StatelessWidget {
           destinations: _navItems,
         ),
         const VerticalDivider(width: 1, color: Color(0xFF334155)),
-        Expanded(child: child),
+        Expanded(
+          child: Column(children: [
+            if (ApiService.readOnly)
+              _ReadOnlyBanner(onRegister: () {
+                onLogout();
+                context.go('/login?register=1');
+              }),
+            Expanded(child: child),
+          ]),
+        ),
+      ]),
+    );
+  }
+}
+
+/// Shown across the top of every screen in the shared public demo, which
+/// the server keeps read-only (see api/app/auth/read_only.py) -- so a
+/// visitor finds out why saving doesn't work before they try, and how to
+/// get an account where it does.
+class _ReadOnlyBanner extends StatelessWidget {
+  final VoidCallback onRegister;
+  const _ReadOnlyBanner({required this.onRegister});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+      color: kAccent.withOpacity(0.12),
+      child: Row(children: [
+        const Icon(Icons.visibility_outlined, color: kAccent, size: 16),
+        const SizedBox(width: 10),
+        const Expanded(
+          child: Text(
+            "You're exploring the shared demo, which is read-only. "
+            'Register your own free account to connect your tools and make changes.',
+            style: TextStyle(color: Colors.white70, fontSize: 12),
+          ),
+        ),
+        TextButton(
+          onPressed: onRegister,
+          child: const Text('Register', style: TextStyle(color: kAccent, fontWeight: FontWeight.w600)),
+        ),
       ]),
     );
   }

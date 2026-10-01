@@ -6,6 +6,7 @@ from app.graph.connection import get_graph_client, close_graph_client
 from app.api.v1 import assets, risks, controls, frameworks, blast_radius, dashboard, connectors, auth, organisation
 from app.connectors import setup as connector_setup  # noqa: F401 -- registers adapters on import
 from app.auth.api_key import verify_api_key
+from app.auth.read_only import enforce_read_only_tenants
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -39,20 +40,23 @@ app.add_middleware(
 )
 
 _auth = [Depends(verify_api_key)]
+# Everything except /auth: also refuses writes to read-only tenants (the
+# shared public demo) -- see app/auth/read_only.py.
+_auth_rw = [Depends(verify_api_key), Depends(enforce_read_only_tenants)]
 
 # Auth endpoints are protected by the API key only (not JWT -- you don't have
 # a JWT yet until you register/login). Everything else keeps the API key
 # gate for now; JWT-based tenant scoping is layered onto individual data
 # endpoints incrementally, starting with the ones tested next.
 app.include_router(auth.router,         prefix="/api/v1/auth",       tags=["Auth"],       dependencies=_auth)
-app.include_router(assets.router,       prefix="/api/v1/assets",     tags=["Assets"],     dependencies=_auth)
-app.include_router(risks.router,        prefix="/api/v1/risks",      tags=["Risks"],      dependencies=_auth)
-app.include_router(controls.router,     prefix="/api/v1/controls",   tags=["Controls"],   dependencies=_auth)
-app.include_router(frameworks.router,   prefix="/api/v1/frameworks", tags=["Frameworks"], dependencies=_auth)
-app.include_router(blast_radius.router, prefix="/api/v1/graph",      tags=["Graph Intelligence"], dependencies=_auth)
-app.include_router(dashboard.router,    prefix="/api/v1/dashboard",  tags=["Dashboard"],  dependencies=_auth)
-app.include_router(connectors.router,   prefix="/api/v1/connectors", tags=["Connectors"], dependencies=_auth)
-app.include_router(organisation.router, prefix="/api/v1/organisation", tags=["Organisation"], dependencies=_auth)
+app.include_router(assets.router,       prefix="/api/v1/assets",     tags=["Assets"],     dependencies=_auth_rw)
+app.include_router(risks.router,        prefix="/api/v1/risks",      tags=["Risks"],      dependencies=_auth_rw)
+app.include_router(controls.router,     prefix="/api/v1/controls",   tags=["Controls"],   dependencies=_auth_rw)
+app.include_router(frameworks.router,   prefix="/api/v1/frameworks", tags=["Frameworks"], dependencies=_auth_rw)
+app.include_router(blast_radius.router, prefix="/api/v1/graph",      tags=["Graph Intelligence"], dependencies=_auth_rw)
+app.include_router(dashboard.router,    prefix="/api/v1/dashboard",  tags=["Dashboard"],  dependencies=_auth_rw)
+app.include_router(connectors.router,   prefix="/api/v1/connectors", tags=["Connectors"], dependencies=_auth_rw)
+app.include_router(organisation.router, prefix="/api/v1/organisation", tags=["Organisation"], dependencies=_auth_rw)
 
 @app.get("/")
 async def root():

@@ -41,11 +41,15 @@ class ApiService {
   static String? _tenantName;
   static String? _graphTenantId;
   static String? _role;
+  // True for the shared public demo -- the server refuses every write to
+  // it (api/app/auth/read_only.py); the shell shows a banner explaining why.
+  static bool _readOnly = false;
 
   static bool get isLoggedIn => _token != null;
   static String? get tenantName => _tenantName;
   static String? get graphTenantId => _graphTenantId;
   static String? get role => _role;
+  static bool get readOnly => _readOnly;
 
   // Registered by the app shell (main.dart's AuthState, via the router) so that any
   // authenticated request hitting a 401 -- most commonly the JWT
@@ -64,6 +68,7 @@ class ApiService {
     _tenantName = null;
     _graphTenantId = null;
     _role = null;
+    _readOnly = false;
     sessionRemove(_sessionKey);
   }
 
@@ -214,12 +219,14 @@ class ApiService {
     _token         = data['access_token'] as String;
     _graphTenantId = data['graph_tenant_id'] as String;
     _role          = data['role'] as String;
+    _readOnly      = data['read_only'] == true;
     _tenantName    = _graphTenantId; // display name; refine later if the API returns the friendly tenant name too
     if (persist) {
       sessionWrite(_sessionKey, json.encode({
         'access_token': _token,
         'graph_tenant_id': _graphTenantId,
         'role': _role,
+        'read_only': _readOnly,
       }));
     }
   }

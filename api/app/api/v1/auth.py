@@ -10,6 +10,7 @@ from app.db.session import get_db
 from app.db.models import Tenant, User
 from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse
 from app.auth.security import hash_password, verify_password, create_access_token
+from app.auth.read_only import is_read_only_tenant
 
 router = APIRouter()
 
@@ -58,6 +59,7 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     return TokenResponse(
         access_token=token, tenant_id=tenant.id,
         graph_tenant_id=tenant.graph_tenant_id, role=user.role,
+        read_only=is_read_only_tenant(tenant.graph_tenant_id),
     )
 
 
@@ -78,4 +80,5 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     return TokenResponse(
         access_token=token, tenant_id=tenant.id,
         graph_tenant_id=tenant.graph_tenant_id, role=user.role,
+        read_only=is_read_only_tenant(tenant.graph_tenant_id),
     )

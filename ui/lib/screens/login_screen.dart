@@ -11,10 +11,14 @@ class LoginScreen extends StatefulWidget {
   /// normal cold-start login. Shows a one-time explanatory banner instead
   /// of leaving the redirect unexplained.
   final bool sessionExpired;
+  /// Open straight in "Register" mode -- used by the read-only demo's
+  /// banner, whose whole point is sending a visitor to make an account.
+  final bool initialRegisterMode;
   const LoginScreen({
     super.key,
     required this.onAuthenticated,
     this.sessionExpired = false,
+    this.initialRegisterMode = false,
   });
 
   @override
@@ -27,7 +31,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passwordController = TextEditingController();
   final _tenantNameController = TextEditingController();
 
-  bool _isRegisterMode = false;
+  late bool _isRegisterMode = widget.initialRegisterMode;
   bool _isLoading = false;
   String? _errorMessage;
 
