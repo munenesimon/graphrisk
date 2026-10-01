@@ -41,10 +41,11 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
   late final AnimationController _pulseCtrl;
   late final Animation<double> _pulseAnim;
 
-  // Current MFA control id in the demo tenant post-reseed (matches the
-  // README's live example) -- the old id here 404'd after seed_demo.py
-  // started generating fresh UUIDs on each reseed.
-  static const _defaultId = '2b813abc-d89a-4186-b11e-b20a4216e15b';
+  // The tenant's own controls, for the picker. This used to be a raw UUID
+  // text box pre-filled with one hard-coded demo-tenant control id, which
+  // 404s in any other tenant (and after every demo reseed).
+  List<Map<String, dynamic>> _controls = [];
+  bool _controlsLoading = true;
   static const _layerCount = 6; // risks, assets, frameworks, framework controls, crosswalk requirements, regulatory obligations
   static const _layerDelay = 180; // ms between each layer unfolding
 
@@ -79,8 +80,27 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
             ).animate(CurvedAnimation(parent: c, curve: Curves.easeOut)))
         .toList();
 
-    _ctrl.text = _defaultId;
-    _run(_defaultId);
+    _loadControls();
+  }
+
+  Future<void> _loadControls() async {
+    try {
+      final list = await ApiService.getControls();
+      if (!mounted) return;
+      final controls = list.whereType<Map<String, dynamic>>()
+          .where((c) => (c['id'] ?? '').toString().isNotEmpty)
+          .toList();
+      setState(() { _controls = controls; _controlsLoading = false; });
+      if (controls.isNotEmpty) {
+        final first = controls.first['id'].toString();
+        _ctrl.text = first;
+        _run(first);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      if (e is AuthException) return;
+      setState(() { _controlsLoading = false; _error = e.toString().replaceFirst('Exception: ', ''); });
+    }
   }
 
   @override
@@ -168,32 +188,54 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
         // ── Query bar ────────────────────────────────────────────────────────
         Row(children: [
           Expanded(
-            child: TextField(
-              controller: _ctrl,
-              style: const TextStyle(
-                  color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
-              decoration: InputDecoration(
-                hintText: 'Control UUID...',
-                hintStyle: const TextStyle(color: Colors.white38),
-                filled: true,
-                fillColor: kSurface,
-                prefixIcon: const Icon(Icons.shield_outlined,
-                    color: Colors.white38, size: 18),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide:
-                        BorderSide(color: kAccent.withOpacity(0.3))),
-                enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide:
-                        BorderSide(color: kAccent.withOpacity(0.3))),
-                focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: const BorderSide(color: kAccent)),
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              ),
-            ),
+            child: _controlsLoading
+                ? const LinearProgressIndicator(color: kAccent, backgroundColor: kSurface)
+                : _controls.isEmpty
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        decoration: BoxDecoration(color: kSurface, borderRadius: BorderRadius.circular(8)),
+                        child: const Text(
+                          'No controls in this tenant yet -- add controls (or run the starter seed) '
+                          'before a blast radius can be computed.',
+                          style: TextStyle(color: Colors.white54, fontSize: 13)),
+                      )
+                    : DropdownButtonFormField<String>(
+                        initialValue: _controls.any((c) => c['id'].toString() == _ctrl.text) ? _ctrl.text : null,
+                        isExpanded: true,
+                        dropdownColor: kSurface,
+                        iconEnabledColor: Colors.white54,
+                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                        decoration: InputDecoration(
+                          filled: true,
+                          fillColor: kSurface,
+                          prefixIcon: const Icon(Icons.shield_outlined, color: Colors.white38, size: 18),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(color: kAccent.withOpacity(0.3))),
+                          enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(color: kAccent.withOpacity(0.3))),
+                          focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(color: kAccent)),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        ),
+                        items: [
+                          for (final ctl in _controls)
+                            DropdownMenuItem<String>(
+                              value: ctl['id'].toString(),
+                              child: Text(
+                                '${ctl['title'] ?? 'Untitled control'}  ·  ${ctl['implementation_status'] ?? ''}',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                        onChanged: _loading ? null : (id) {
+                          if (id == null) return;
+                          setState(() => _ctrl.text = id);
+                          _run(id);
+                        },
+                      ),
           ),
           const SizedBox(width: 12),
           ElevatedButton.icon(
