@@ -192,7 +192,7 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
         isExpanded: isExpanded,
         onTap: () => _toggleCategory(cat.label),
       ));
-      edges.add([center, catPos]);
+      edges.add(_circleToCircle(center, 39, catPos, 29));
 
       if (!isExpanded) continue;
 
@@ -223,7 +223,7 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
           isLeaf: true,
           isOverflow: isOverflow,
         ));
-        edges.add([catPos, itemPos]);
+        edges.add(_circleToRect(catPos, 29, itemPos, 55, 21));
       }
     }
 
@@ -253,7 +253,7 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
               ),
               for (final n in nodes)
                 Positioned(
-                  left: _canvasSize / 2 + n.position.dx - (n.isLeaf ? 55 : n.size / 2),
+                  left: _canvasSize / 2 + n.position.dx - (n.isLeaf ? 55 : _kNodeBoxWidth / 2),
                   top: _canvasSize / 2 + n.position.dy - (n.isLeaf ? 21 : n.size / 2),
                   child: n.isLeaf ? _LeafChip(node: n) : _CircleNode(node: n),
                 ),
@@ -296,6 +296,36 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
       ]);
     });
   }
+}
+
+/// Width of a circle node's whole box (circle + label underneath). The
+/// label is what sets it -- it's wider than any circle -- and the circle
+/// is centered horizontally inside it, so positioning must center this
+/// box on the node's point, not a box the size of the circle. Getting
+/// that wrong shifted every circle sideways off the end of its spokes.
+const double _kNodeBoxWidth = 130;
+
+/// A spoke between two circles, trimmed to start and end at each circle's
+/// edge rather than its center (same look as a standard hub-and-spoke
+/// diagram, and no line running underneath the node).
+List<Offset> _circleToCircle(Offset a, double ra, Offset b, double rb) {
+  final d = b - a;
+  final len = d.distance;
+  if (len <= ra + rb) return [a, b];
+  final u = d / len;
+  return [a + u * (ra + 2), b - u * (rb + 2)];
+}
+
+/// A spoke from a circle to a rectangular chip (half-width/half-height
+/// given), ending where it meets the chip's border.
+List<Offset> _circleToRect(Offset a, double ra, Offset b, double halfW, double halfH) {
+  final d = b - a;
+  final len = d.distance;
+  if (len == 0) return [a, b];
+  final u = d / len;
+  final tx = u.dx.abs() < 1e-6 ? double.infinity : halfW / u.dx.abs();
+  final ty = u.dy.abs() < 1e-6 ? double.infinity : halfH / u.dy.abs();
+  return [a + u * (ra + 2), b - u * math.min(tx, ty)];
 }
 
 class _Category {
@@ -373,20 +403,20 @@ class _CircleNode extends StatelessWidget {
 
     return GestureDetector(
       onTap: onTap,
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
+      child: SizedBox(width: _kNodeBoxWidth, child: Column(mainAxisSize: MainAxisSize.min, children: [
         Container(
           width: node.size,
           height: node.size,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: node.color.withOpacity(node.isCenter ? 0.18 : (node.isExpanded ? 0.28 : 0.15)),
+            color: Color.alphaBlend(node.color.withOpacity(node.isCenter ? 0.18 : (node.isExpanded ? 0.28 : 0.15)), kBackground),
             border: Border.all(color: node.color, width: node.isCenter ? 2 : (node.isExpanded ? 2.5 : 1.5)),
           ),
           child: Icon(node.icon, color: node.color, size: node.isCenter ? 30 : 22),
         ),
         const SizedBox(height: 4),
         SizedBox(
-          width: 130,
+          width: _kNodeBoxWidth,
           child: Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: [
             Flexible(
               child: Text(
@@ -404,7 +434,7 @@ class _CircleNode extends StatelessWidget {
             if (chevron != null) Icon(chevron, color: node.color, size: 14),
           ]),
         ),
-      ]),
+      ])),
     );
   }
 }
@@ -423,7 +453,7 @@ class _LeafChip extends StatelessWidget {
         alignment: Alignment.center,
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
-          color: node.isOverflow ? kSurface2.withOpacity(0.6) : node.color.withOpacity(0.1),
+          color: node.isOverflow ? Color.alphaBlend(kSurface2.withOpacity(0.6), kBackground) : Color.alphaBlend(node.color.withOpacity(0.1), kBackground),
           borderRadius: BorderRadius.circular(6),
           border: Border.all(color: node.isOverflow ? Colors.white24 : node.color.withOpacity(0.5)),
         ),
