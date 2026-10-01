@@ -40,6 +40,9 @@ dependencies:
   fl_chart: ^1.2.0
   intl: ^0.20.3
   url_launcher: ^6.3.2
+  # Browser sessionStorage for the login session (lib/services/session_store_web.dart).
+  # Already resolved transitively via Flutter's own web support -- see pubspec.lock.
+  web: ^1.1.1
 
 dev_dependencies:
   flutter_test:

@@ -67,7 +67,7 @@ class RegulatoryObligationsSection extends StatelessWidget {
             if (items.isEmpty) _EmptyState(hint: obligations.hint, onManageProfile: onManageProfile),
             ...items.map((o) => Padding(
                   padding: const EdgeInsets.only(bottom: 6),
-                  child: _ObligationItem(obligation: o),
+                  child: RegulatoryObligationItem(obligation: o),
                 )),
           ]),
         ),
@@ -115,16 +115,20 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-class _ObligationItem extends StatefulWidget {
+/// One notification duty, collapsible. Public (not private to this file)
+/// so Blast Radius's graph view can show the exact same detail, already
+/// expanded, when one of its "Regulatory Duties" items is tapped.
+class RegulatoryObligationItem extends StatefulWidget {
   final RegulatoryObligation obligation;
-  const _ObligationItem({required this.obligation});
+  final bool initiallyExpanded;
+  const RegulatoryObligationItem({super.key, required this.obligation, this.initiallyExpanded = false});
 
   @override
-  State<_ObligationItem> createState() => _ObligationItemState();
+  State<RegulatoryObligationItem> createState() => _RegulatoryObligationItemState();
 }
 
-class _ObligationItemState extends State<_ObligationItem> {
-  bool _expanded = false;
+class _RegulatoryObligationItemState extends State<RegulatoryObligationItem> {
+  late bool _expanded = widget.initiallyExpanded;
 
   String get _deadlineLabel {
     final h = widget.obligation.deadlineHours;

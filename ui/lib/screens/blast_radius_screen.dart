@@ -159,6 +159,54 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
     }
   }
 
+  /// The detail panel for an item tapped in the graph view: the exact
+  /// widget the list view uses for that item, already expanded, so both
+  /// views always describe an item the same way. `index` is the item's
+  /// position in its category's full list -- the graph builds each
+  /// category from the same BlastRadius fields, in the same order (see
+  /// BlastRadiusGraph._buildCategories).
+  Widget? _graphItemDetail(String category, int index) {
+    final r = _result;
+    if (r == null) return null;
+    String? at(List<String> list) => index >= 0 && index < list.length ? list[index] : null;
+
+    switch (category) {
+      case 'Exposed Risks':
+        final name = at(r.exposedRisks);
+        return name == null ? null : _RiskItem(name: name, result: r, initiallyExpanded: true);
+      case 'Affected Assets':
+        final name = at(r.affectedAssets);
+        return name == null ? null : _AssetItem(name: name, initiallyExpanded: true);
+      case 'Compliance Gaps':
+        // Same three groups, same badges, as the list's Compliance Gaps layer.
+        final g = r.frameworkGroups;
+        final yours = g.yourRegulations.length, std = g.standards.length;
+        if (index < yours) {
+          return _FrameworkItem(name: g.yourRegulations[index], badge: 'Your regulation',
+              badgeColor: kOrange, initiallyExpanded: true);
+        }
+        if (index < yours + std) {
+          return _FrameworkItem(name: g.standards[index - yours], badge: 'Standard',
+              badgeColor: kAccent, initiallyExpanded: true);
+        }
+        final other = index - yours - std;
+        if (other >= g.otherRegulations.length) return null;
+        return _FrameworkItem(name: g.otherRegulations[other], badge: 'Not in your profile',
+            badgeColor: Colors.white38, subdued: true, initiallyExpanded: true);
+      case 'Framework Controls':
+        final ref = at(r.frameworkControls);
+        return ref == null ? null : _FrameworkControlItem(ref: ref, initiallyExpanded: true);
+      case 'Crosswalk Requirements':
+        final raw = at(r.mappedFrameworkControls);
+        return raw == null ? null : _MappedRequirementItem(raw: raw, initiallyExpanded: true);
+      case 'Regulatory Duties':
+        final list = r.regulatoryObligations.obligations;
+        if (index < 0 || index >= list.length) return null;
+        return RegulatoryObligationItem(obligation: list[index], initiallyExpanded: true);
+    }
+    return null;
+  }
+
   void _setScope(String scope) {
     if (scope == _scope) return;
     setState(() => _scope = scope);
@@ -297,7 +345,7 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
               border: Border.all(color: Colors.white.withOpacity(0.06)),
             ),
             clipBehavior: Clip.antiAlias,
-            child: BlastRadiusGraph(result: _result!),
+            child: BlastRadiusGraph(result: _result!, itemDetailBuilder: _graphItemDetail),
           ),
           const SizedBox(height: 8),
           const Text(
@@ -704,14 +752,15 @@ class _ExpandableSectionState extends State<_ExpandableSection> {
 class _RiskItem extends StatefulWidget {
   final String name;
   final BlastRadius result;
-  const _RiskItem({required this.name, required this.result});
+  final bool initiallyExpanded;
+  const _RiskItem({required this.name, required this.result, this.initiallyExpanded = false});
 
   @override
   State<_RiskItem> createState() => _RiskItemState();
 }
 
 class _RiskItemState extends State<_RiskItem> {
-  bool _expanded = false;
+  late bool _expanded = widget.initiallyExpanded;
 
   @override
   Widget build(BuildContext context) {
@@ -772,14 +821,15 @@ class _RiskItemState extends State<_RiskItem> {
 
 class _AssetItem extends StatefulWidget {
   final String name;
-  const _AssetItem({required this.name});
+  final bool initiallyExpanded;
+  const _AssetItem({required this.name, this.initiallyExpanded = false});
 
   @override
   State<_AssetItem> createState() => _AssetItemState();
 }
 
 class _AssetItemState extends State<_AssetItem> {
-  bool _expanded = false;
+  late bool _expanded = widget.initiallyExpanded;
 
   IconData get _icon {
     final n = widget.name.toLowerCase();
@@ -844,14 +894,15 @@ class _FrameworkItem extends StatefulWidget {
   /// Regulations outside the tenant's profile (scope=all only) render
   /// muted, since they're shown for context, not as something to act on.
   final bool subdued;
-  const _FrameworkItem({required this.name, this.badge, this.badgeColor, this.subdued = false});
+  final bool initiallyExpanded;
+  const _FrameworkItem({required this.name, this.badge, this.badgeColor, this.subdued = false, this.initiallyExpanded = false});
 
   @override
   State<_FrameworkItem> createState() => _FrameworkItemState();
 }
 
 class _FrameworkItemState extends State<_FrameworkItem> {
-  bool _expanded = false;
+  late bool _expanded = widget.initiallyExpanded;
 
   @override
   Widget build(BuildContext context) {
@@ -913,14 +964,15 @@ class _FrameworkItemState extends State<_FrameworkItem> {
 /// "KENYA_DPA DPA-43.1" -- see BLAST_RADIUS_CONTROL's mapped_framework_controls.
 class _MappedRequirementItem extends StatefulWidget {
   final String raw;
-  const _MappedRequirementItem({required this.raw});
+  final bool initiallyExpanded;
+  const _MappedRequirementItem({required this.raw, this.initiallyExpanded = false});
 
   @override
   State<_MappedRequirementItem> createState() => _MappedRequirementItemState();
 }
 
 class _MappedRequirementItemState extends State<_MappedRequirementItem> {
-  bool _expanded = false;
+  late bool _expanded = widget.initiallyExpanded;
 
   String get _frameworkSlug {
     final i = widget.raw.indexOf(' ');
@@ -979,14 +1031,15 @@ class _MappedRequirementItemState extends State<_MappedRequirementItem> {
 
 class _FrameworkControlItem extends StatefulWidget {
   final String ref;
-  const _FrameworkControlItem({required this.ref});
+  final bool initiallyExpanded;
+  const _FrameworkControlItem({required this.ref, this.initiallyExpanded = false});
 
   @override
   State<_FrameworkControlItem> createState() => _FrameworkControlItemState();
 }
 
 class _FrameworkControlItemState extends State<_FrameworkControlItem> {
-  bool _expanded = false;
+  late bool _expanded = widget.initiallyExpanded;
 
   String get _description {
     const descriptions = {

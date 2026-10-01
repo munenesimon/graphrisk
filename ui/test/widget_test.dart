@@ -13,9 +13,9 @@ void main() {
     await tester.pumpWidget(const GraphRiskApp());
     await tester.pump();
 
-    // ApiService.isLoggedIn is backed by an in-memory static token that
-    // starts null in a fresh test process, so AuthGate must show the
-    // login form, not the main dashboard shell.
+    // ApiService.isLoggedIn starts false in a fresh test process (main()'s
+    // restoreSession() isn't run by pumpWidget), so the router's redirect
+    // must land on /login, not the main dashboard shell.
     expect(find.text('GraphRisk'), findsOneWidget);
     expect(find.widgetWithText(ElevatedButton, 'Log in'), findsOneWidget);
     expect(find.text('Dashboard'), findsNothing);

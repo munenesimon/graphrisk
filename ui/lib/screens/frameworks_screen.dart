@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../constants/colors.dart';
 import '../services/api_service.dart';
-import 'framework_detail_screen.dart';
+import 'package:go_router/go_router.dart';
 
 class FrameworksScreen extends StatefulWidget {
   const FrameworksScreen({super.key});
@@ -95,10 +95,7 @@ class _FrameworksScreenState extends State<FrameworksScreen> {
               color: Colors.transparent,
               child: InkWell(
                 borderRadius: BorderRadius.circular(12),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => FrameworkDetailScreen(frameworkId: id, frameworkName: name)),
-                ),
+                onTap: () => context.go('/frameworks/${Uri.encodeComponent(id)}?name=${Uri.encodeQueryComponent(name)}'),
                 child: card,
               ),
             );
@@ -118,10 +115,7 @@ class _FrameworksScreenState extends State<FrameworksScreen> {
             color: Colors.transparent,
             child: InkWell(
               borderRadius: BorderRadius.circular(10),
-              onTap: id.isEmpty ? null : () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => FrameworkDetailScreen(frameworkId: id, frameworkName: name)),
-              ),
+              onTap: id.isEmpty ? null : () => context.go('/frameworks/${Uri.encodeComponent(id)}?name=${Uri.encodeQueryComponent(name)}'),
               child: Container(
                 margin: const EdgeInsets.only(bottom: 10),
                 padding: const EdgeInsets.all(16),

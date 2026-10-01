@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../constants/colors.dart';
+import '../constants/frameworks.dart';
 import '../models/dashboard.dart';
 
 /// A radial "hub and spoke" rendering of a BlastRadius result: the
@@ -33,7 +34,13 @@ import '../models/dashboard.dart';
 /// against this project's Flutter SDK version without a live build.
 class BlastRadiusGraph extends StatefulWidget {
   final BlastRadius result;
-  const BlastRadiusGraph({super.key, required this.result});
+  /// Builds the detail shown when an individual item is tapped -- the
+  /// screen passes the same widget its list view uses for that item, so
+  /// both views describe it identically. Given the category label and the
+  /// item's index within that category's full list. Returning null (or no
+  /// builder at all) falls back to just showing the item's full name.
+  final Widget? Function(String category, int index)? itemDetailBuilder;
+  const BlastRadiusGraph({super.key, required this.result, this.itemDetailBuilder});
 
   @override
   State<BlastRadiusGraph> createState() => _BlastRadiusGraphState();
@@ -90,6 +97,46 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
       // scaled/centered for whatever was on screen before.
       _lastFittedSize = null;
     });
+  }
+
+  void _openItemDetail(String category, int index, String label) {
+    final detail = widget.itemDetailBuilder?.call(category, index);
+    if (detail == null) {
+      _showDetail(context, label);
+      return;
+    }
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: kSurface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 8, 16),
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Expanded(
+                  child: Text(category,
+                      style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+                ),
+                IconButton(
+                  tooltip: 'Close',
+                  icon: const Icon(Icons.close, color: Colors.white54, size: 18),
+                  onPressed: () => Navigator.of(ctx).pop(),
+                ),
+              ]),
+              Flexible(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: SingleChildScrollView(child: detail),
+                ),
+              ),
+            ]),
+          ),
+        ),
+      ),
+    );
   }
 
   void _fitToView(Size viewport) {
@@ -213,15 +260,22 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
         final itemAngle = catAngle - window / 2 + window * t;
         final itemPos = Offset(_itemRadius * math.cos(itemAngle), _itemRadius * math.sin(itemAngle));
         final isOverflow = overflow > 0 && ii == leafCount - 1;
+        // Same readable framework names the list view shows (e.g. "NIST SP
+        // 800-53 Rev5" rather than the raw "NIST_800_53" slug).
+        final label = isOverflow
+            ? '+$overflow more (see List view)'
+            : (cat.label == 'Compliance Gaps' ? frameworkDisplayName(shown[ii]) : shown[ii]);
+        final itemIndex = ii;
         nodes.add(_PositionedNode(
           position: itemPos,
           size: 0,
           color: cat.color,
           icon: null,
-          label: isOverflow ? '+$overflow more (see List view)' : shown[ii],
+          label: label,
           isCenter: false,
           isLeaf: true,
           isOverflow: isOverflow,
+          onTap: isOverflow ? null : () => _openItemDetail(cat.label, itemIndex, label),
         ));
         edges.add(_circleToRect(catPos, 29, itemPos, 55, 21));
       }
@@ -446,7 +500,7 @@ class _LeafChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => _showDetail(context, node.label),
+      onTap: node.onTap ?? () => _showDetail(context, node.label),
       child: Container(
         width: 110,
         height: 42,

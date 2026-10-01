@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'constants/colors.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/blast_radius_screen.dart';
 import 'screens/frameworks_screen.dart';
+import 'screens/framework_detail_screen.dart';
 import 'screens/vulnerability_screen.dart';
 import 'screens/assets_screen.dart';
 import 'screens/regulatory_profile_screen.dart';
@@ -11,15 +13,126 @@ import 'screens/login_screen.dart';
 import 'services/api_service.dart';
 
 void main() {
+  // Pick up this tab's session (if any) before the first route is
+  // resolved, so a reload or a Back/Forward into the app lands on the
+  // screen in the URL rather than on the login screen.
+  ApiService.restoreSession();
+  ApiService.onSessionExpired = _auth.expired;
   runApp(const GraphRiskApp());
 }
+
+/// Login state the router listens to. Every screen used to be swapped in
+/// and out of a single page by hand (an AuthGate widget plus a tab index),
+/// so the browser's history only ever held one entry: Back left the app
+/// entirely, and coming back reloaded it with the in-memory session gone
+/// -- which read as Back "logging you out." Each screen now has its own
+/// URL (/#/dashboard, /#/frameworks/<id>, ...), so Back and Forward move
+/// between screens, and the redirect below keeps unauthenticated visits on
+/// /login.
+class AuthState extends ChangeNotifier {
+  bool sessionExpired = false;
+
+  bool get loggedIn => ApiService.isLoggedIn;
+
+  void authenticated() {
+    sessionExpired = false;
+    notifyListeners();
+  }
+
+  void logout() {
+    ApiService.logout();
+    sessionExpired = false;
+    notifyListeners();
+  }
+
+  // Fired by ApiService whenever an authenticated call comes back 401
+  // (JWT expired) -- it has already cleared the session by this point.
+  void expired() {
+    sessionExpired = true;
+    notifyListeners();
+  }
+}
+
+final _auth = AuthState();
+
+/// Rail order. DashboardScreen's stat cards navigate by index into this.
+const _tabPaths = [
+  '/dashboard',
+  '/blast-radius',
+  '/frameworks',
+  '/vulnerabilities',
+  '/assets',
+  '/regulatory',
+  '/connectors',
+];
+
+final _router = GoRouter(
+  initialLocation: '/dashboard',
+  refreshListenable: _auth,
+  redirect: (context, state) {
+    final atLogin = state.matchedLocation == '/login';
+    if (!_auth.loggedIn) return atLogin ? null : '/login';
+    if (atLogin) return '/dashboard';
+    return null;
+  },
+  routes: [
+    GoRoute(path: '/', redirect: (_, __) => '/dashboard'),
+    GoRoute(
+      path: '/login',
+      builder: (context, state) => LoginScreen(
+        onAuthenticated: _auth.authenticated,
+        sessionExpired: _auth.sessionExpired,
+      ),
+    ),
+    ShellRoute(
+      builder: (context, state, child) => MainShell(
+        location: state.matchedLocation,
+        onLogout: _auth.logout,
+        child: child,
+      ),
+      routes: [
+        GoRoute(
+          path: '/dashboard',
+          builder: (context, state) =>
+              DashboardScreen(onNavigate: (i) => context.go(_tabPaths[i])),
+        ),
+        GoRoute(
+          path: '/blast-radius',
+          builder: (context, state) =>
+              BlastRadiusScreen(onManageProfile: () => context.go('/regulatory')),
+        ),
+        GoRoute(
+          path: '/frameworks',
+          builder: (context, state) => const FrameworksScreen(),
+          routes: [
+            GoRoute(
+              path: ':id',
+              builder: (context, state) => FrameworkDetailScreen(
+                frameworkId: state.pathParameters['id']!,
+                frameworkName: state.uri.queryParameters['name'] ?? 'Framework',
+              ),
+            ),
+          ],
+        ),
+        GoRoute(
+          path: '/vulnerabilities',
+          builder: (context, state) =>
+              VulnerabilityScreen(onManageProfile: () => context.go('/regulatory')),
+        ),
+        GoRoute(path: '/assets', builder: (context, state) => const AssetsScreen()),
+        GoRoute(path: '/regulatory', builder: (context, state) => const RegulatoryProfileScreen()),
+        GoRoute(path: '/connectors', builder: (context, state) => const ConnectorsScreen()),
+      ],
+    ),
+  ],
+);
 
 class GraphRiskApp extends StatelessWidget {
   const GraphRiskApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return MaterialApp.router(
       title: 'GraphRisk Intelligence Platform',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
@@ -28,108 +141,23 @@ class GraphRiskApp extends StatelessWidget {
         colorScheme: const ColorScheme.dark(primary: kAccent, surface: kSurface),
         fontFamily: 'Inter',
       ),
-      home: const AuthGate(),
+      routerConfig: _router,
     );
   }
 }
 
-/// Shows the login screen until a session exists, then shows the app.
-/// A simple StatefulWidget swap is enough here -- no routing package
-/// needed for a two-state app (logged out / logged in).
-class AuthGate extends StatefulWidget {
-  const AuthGate({super.key});
-
-  @override
-  State<AuthGate> createState() => _AuthGateState();
-}
-
-class _AuthGateState extends State<AuthGate> {
-  bool _loggedIn = ApiService.isLoggedIn;
-  bool _sessionExpired = false;
-
-  @override
-  void initState() {
-    super.initState();
-    ApiService.onSessionExpired = _handleSessionExpired;
-  }
-
-  @override
-  void dispose() {
-    // Only clear the hook if we're still the one holding it, so we don't
-    // clobber a handler set by some later AuthGate instance.
-    if (identical(ApiService.onSessionExpired, _handleSessionExpired)) {
-      ApiService.onSessionExpired = null;
-    }
-    super.dispose();
-  }
-
-  void _handleAuthenticated() => setState(() {
-        _loggedIn = true;
-        _sessionExpired = false;
-      });
-
-  void _handleLogout() {
-    ApiService.logout();
-    setState(() {
-      _loggedIn = false;
-      _sessionExpired = false;
-    });
-  }
-
-  // Fired by ApiService whenever an authenticated call comes back 401
-  // (JWT expired). Bounces straight to the login screen with a banner
-  // explaining why, rather than leaving whatever screen was open stuck.
-  void _handleSessionExpired() {
-    if (!mounted) return;
-    setState(() {
-      _loggedIn = false;
-      _sessionExpired = true;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!_loggedIn) {
-      return LoginScreen(
-        onAuthenticated: _handleAuthenticated,
-        sessionExpired: _sessionExpired,
-      );
-    }
-    return MainShell(onLogout: _handleLogout);
-  }
-}
-
-class MainShell extends StatefulWidget {
+class MainShell extends StatelessWidget {
+  final String location;
   final VoidCallback onLogout;
-  const MainShell({super.key, required this.onLogout});
+  final Widget child;
+  const MainShell({super.key, required this.location, required this.onLogout, required this.child});
 
-  @override
-  State<MainShell> createState() => _MainShellState();
-}
+  int get _selectedIndex {
+    final i = _tabPaths.indexWhere((p) => location == p || location.startsWith('$p/'));
+    return i < 0 ? 0 : i;
+  }
 
-class _MainShellState extends State<MainShell> {
-  int _selectedIndex = 0;
-
-  /// Lets child screens (e.g. DashboardScreen's stat card drill-down)
-  /// switch tabs without needing a routing package.
-  void _navigateTo(int index) => setState(() => _selectedIndex = index);
-
-  // Index of the Regulatory Profile tab -- kept as a named constant since
-  // both BlastRadiusScreen and VulnerabilityScreen jump straight to it from
-  // their "no regulatory profile set" hints.
-  static const _regulatoryProfileIndex = 5;
-
-  List<Widget> get _screens => [
-    DashboardScreen(onNavigate: _navigateTo),
-    BlastRadiusScreen(onManageProfile: () => _navigateTo(_regulatoryProfileIndex)),
-    const FrameworksScreen(),
-    VulnerabilityScreen(onManageProfile: () => _navigateTo(_regulatoryProfileIndex)),
-    const AssetsScreen(),
-    const RegulatoryProfileScreen(),
-    const ConnectorsScreen(),
-  ];
-
-  final _navItems = const [
+  static const _navItems = [
     NavigationRailDestination(icon: Icon(Icons.dashboard_outlined),    selectedIcon: Icon(Icons.dashboard),    label: Text('Dashboard')),
     NavigationRailDestination(icon: Icon(Icons.bolt_outlined),         selectedIcon: Icon(Icons.bolt),         label: Text('Blast Radius')),
     NavigationRailDestination(icon: Icon(Icons.policy_outlined),       selectedIcon: Icon(Icons.policy),       label: Text('Frameworks')),
@@ -147,7 +175,7 @@ class _MainShellState extends State<MainShell> {
         NavigationRail(
           backgroundColor: kSurface,
           selectedIndex: _selectedIndex,
-          onDestinationSelected: (i) => setState(() => _selectedIndex = i),
+          onDestinationSelected: (i) => context.go(_tabPaths[i]),
           extended: extended,
           leading: Padding(
             padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 8),
@@ -172,7 +200,7 @@ class _MainShellState extends State<MainShell> {
               child: Padding(
                 padding: const EdgeInsets.only(bottom: 16),
                 child: IconButton(
-                  onPressed: widget.onLogout,
+                  onPressed: onLogout,
                   icon: const Icon(Icons.logout, color: Colors.white38, size: 20),
                   tooltip: 'Log out',
                 ),
@@ -187,7 +215,7 @@ class _MainShellState extends State<MainShell> {
           destinations: _navItems,
         ),
         const VerticalDivider(width: 1, color: Color(0xFF334155)),
-        Expanded(child: _screens[_selectedIndex]),
+        Expanded(child: child),
       ]),
     );
   }

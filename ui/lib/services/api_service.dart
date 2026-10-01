@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show VoidCallback;
 import 'package:http/http.dart' as http;
 import '../models/dashboard.dart';
+import 'session_store.dart';
 
 /// Thrown when a request fails because there is no valid session.
 /// Screens can catch this specifically to redirect to the login screen.
@@ -32,10 +33,10 @@ class ApiService {
   // production build if the key ever needs to differ per environment.
   static const _apiKey = String.fromEnvironment('GRAPHRISK_API_KEY', defaultValue: '');
 
-  // In-memory session state. Simple and sufficient for a demo: the token
-  // is cleared on app restart, which just means the user logs in again --
-  // no stale-session bugs to worry about. Swap for flutter_secure_storage
-  // if "stay logged in across restarts" becomes a real requirement.
+  // Session state, mirrored into the browser tab's sessionStorage (see
+  // session_store.dart) so a reload -- or the browser Back button leaving
+  // the app and coming back -- doesn't log the user out. Closing the tab
+  // still ends the session, and an expired token is never restored.
   static String? _token;
   static String? _tenantName;
   static String? _graphTenantId;
@@ -46,7 +47,7 @@ class ApiService {
   static String? get graphTenantId => _graphTenantId;
   static String? get role => _role;
 
-  // Registered by the app shell (main.dart's AuthGate) so that any
+  // Registered by the app shell (main.dart's AuthState, via the router) so that any
   // authenticated request hitting a 401 -- most commonly the JWT
   // expiring after access_token_expire_minutes (60 min by default) --
   // bounces the user straight back to the login screen instead of
@@ -56,11 +57,51 @@ class ApiService {
   // of a dead end.
   static VoidCallback? onSessionExpired;
 
+  static const _sessionKey = 'graphrisk.session';
+
   static void logout() {
     _token = null;
     _tenantName = null;
     _graphTenantId = null;
     _role = null;
+    sessionRemove(_sessionKey);
+  }
+
+  /// Called once from main() before the app starts: picks the session
+  /// back up from this tab's sessionStorage if there is one and its JWT
+  /// hasn't expired yet. Anything malformed or expired is just discarded
+  /// -- the user lands on the login screen, same as before.
+  static void restoreSession() {
+    final raw = sessionRead(_sessionKey);
+    if (raw == null) return;
+    try {
+      final data = json.decode(raw) as Map<String, dynamic>;
+      final token = data['access_token'] as String?;
+      if (token == null || _isExpired(token)) {
+        sessionRemove(_sessionKey);
+        return;
+      }
+      _applySession(data, persist: false);
+    } catch (_) {
+      sessionRemove(_sessionKey);
+    }
+  }
+
+  // Reads the JWT's own `exp` claim (no signature check needed -- the
+  // server still verifies every request; this only avoids restoring a
+  // token we already know it will reject).
+  static bool _isExpired(String jwt) {
+    try {
+      final parts = jwt.split('.');
+      if (parts.length != 3) return true;
+      final payload = json.decode(utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))));
+      final exp = (payload as Map<String, dynamic>)['exp'];
+      if (exp is! num) return false;
+      final expiry = DateTime.fromMillisecondsSinceEpoch(exp.toInt() * 1000, isUtc: true);
+      return DateTime.now().toUtc().isAfter(expiry.subtract(const Duration(seconds: 30)));
+    } catch (_) {
+      return true;
+    }
   }
 
   static Map<String, String> get _authHeaders => {
@@ -169,11 +210,18 @@ class ApiService {
     _applySession(data);
   }
 
-  static void _applySession(Map<String, dynamic> data) {
+  static void _applySession(Map<String, dynamic> data, {bool persist = true}) {
     _token         = data['access_token'] as String;
     _graphTenantId = data['graph_tenant_id'] as String;
     _role          = data['role'] as String;
     _tenantName    = _graphTenantId; // display name; refine later if the API returns the friendly tenant name too
+    if (persist) {
+      sessionWrite(_sessionKey, json.encode({
+        'access_token': _token,
+        'graph_tenant_id': _graphTenantId,
+        'role': _role,
+      }));
+    }
   }
 
   // ── Dashboard / Graph (all tenant-scoped calls now carry NO query
