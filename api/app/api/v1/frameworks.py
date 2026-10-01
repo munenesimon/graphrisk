@@ -11,13 +11,37 @@ async def list_frameworks(user: CurrentUser = Depends(get_current_user)):
     return {"frameworks": result, "total": len(result)}
 
 @router.get("/{framework_id}/controls")
-async def get_framework_controls(framework_id: str, domain: str = Query(default=None), user: CurrentUser = Depends(get_current_user)):
-    result = run_query(queries.GET_FRAMEWORK_CONTROLS, {"framework_id": framework_id})
+async def get_framework_controls(
+    framework_id: str,
+    domain: str = Query(default=None),
+    status: str = Query(default=None, description="Filter the returned list: 'covered' or 'not_covered'"),
+    user: CurrentUser = Depends(get_current_user),
+):
+    # Per-control coverage (not just the framework-wide percentage) so
+    # the UI can list exactly which requirements are covered and which
+    # aren't -- see GET_FRAMEWORK_CONTROLS_WITH_STATUS's own comment in
+    # graphrisk-core for the coverage rule this mirrors.
+    result = run_query(
+        queries.GET_FRAMEWORK_CONTROLS_WITH_STATUS,
+        {"framework_id": framework_id, "tenant_id": user.graph_tenant_id},
+    )
     if not result:
         raise HTTPException(status_code=404, detail=f"Framework {framework_id} not found")
     if domain:
         result = [r for r in result if domain.lower() in (r.get("domain") or "").lower()]
-    return {"framework_id": framework_id, "controls": result, "total": len(result)}
+    covered_count = sum(1 for r in result if r.get("status") != "not_covered")
+    filtered = result
+    if status == "covered":
+        filtered = [r for r in result if r.get("status") != "not_covered"]
+    elif status == "not_covered":
+        filtered = [r for r in result if r.get("status") == "not_covered"]
+    return {
+        "framework_id": framework_id,
+        "controls": filtered,
+        "total": len(result),
+        "covered": covered_count,
+        "not_covered": len(result) - covered_count,
+    }
 
 @router.get("/{framework_id}/coverage")
 async def get_coverage(framework_id: str, user: CurrentUser = Depends(get_current_user)):

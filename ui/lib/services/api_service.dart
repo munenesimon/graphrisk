@@ -228,6 +228,15 @@ class ApiService {
     return await _get('/dashboard/framework-coverage');
   }
 
+  // Per-control coverage for one framework -- which specific requirements
+  // are covered (directly or via a crosswalk mapping) and which aren't,
+  // for the Frameworks screen's drill-down. Separate from
+  // getFrameworkCoverage() above, which only returns the tenant-wide
+  // percentage per framework.
+  static Future<Map<String, dynamic>> getFrameworkControls(String frameworkId) async {
+    return await _get('/frameworks/$frameworkId/controls');
+  }
+
   // ── Assets (typed) ─────────────────────────────────────────────────────
   static Future<List<Asset>> getAssetsFull() async {
     final data = await _get('/assets/');

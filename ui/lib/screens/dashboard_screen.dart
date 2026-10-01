@@ -9,7 +9,8 @@ import '../widgets/section_header.dart';
 class DashboardScreen extends StatefulWidget {
   /// Called with the NavigationRail index to switch to when a drillable
   /// stat card is tapped. Index mapping mirrors MainShell's _screens list:
-  /// 0 = Dashboard, 1 = Blast Radius, 2 = Frameworks, 3 = Vulnerabilities.
+  /// 0 = Dashboard, 1 = Blast Radius, 2 = Frameworks, 3 = Vulnerabilities,
+  /// 4 = Assets.
   final void Function(int index)? onNavigate;
 
   const DashboardScreen({super.key, this.onNavigate});
@@ -93,7 +94,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   subtitle: controlPct + '% implemented', color: kGreen, icon: Icons.shield_outlined,
                   onTap: widget.onNavigate == null ? null : () => widget.onNavigate!(2))),
               SizedBox(width: w, child: StatCard(label: 'Assets', value: s.totalAssets.toString(),
-                  subtitle: 'Monitored', color: kAccent, icon: Icons.devices_outlined)),
+                  subtitle: 'Monitored', color: kAccent, icon: Icons.devices_outlined,
+                  onTap: widget.onNavigate == null ? null : () => widget.onNavigate!(4))),
               SizedBox(width: w, child: StatCard(label: 'Graph Nodes', value: g.totalNodes.toString(),
                   subtitle: g.totalEdges.toString() + ' relationships', color: kPurple, icon: Icons.hub_outlined)),
             ]);
