@@ -1,12 +1,10 @@
-**Live demo:** `https://graphrisk-735a0.web.app` · **API:** `https://graphrisk.onrender.com` · **Source:** `https://github.com/munenesimon/graphrisk`
-
 # GraphRisk Intelligence Platform
 
 > **Risk is a network, not a list.**
 
 GraphRisk is a graph-based cybersecurity risk intelligence platform that models your security posture as a traversable graph rather than a static spreadsheet. When a control fails, every affected asset, risk, and compliance obligation updates automatically — no manual re-entry.
 
-**Live demo:** `https://graphrisk.onrender.com` · **API docs:** `https://graphrisk.onrender.com/docs`
+**Live app:** [graphrisk-735a0.web.app](https://graphrisk-735a0.web.app) · **API:** `https://graphrisk.onrender.com` · **API docs:** [graphrisk.onrender.com/docs](https://graphrisk.onrender.com/docs)
 
 ---
 
@@ -20,7 +18,29 @@ One change. Automatic cascade. No spreadsheet.
 
 ---
 
-## Live Demo
+## Try It
+
+### In the browser (no setup)
+
+1. Open [graphrisk-735a0.web.app](https://graphrisk-735a0.web.app) and click **Use demo credentials**, then **Log in**.
+2. You're in the demo organisation — a Kenyan commercial bank. Things worth trying:
+   - **Blast Radius** — pick a control from the dropdown (e.g. *Multi-Factor Authentication*). **List** view shows the full cascade; **Graph** view shows the control at the hub with one node per category — tap a category to expand it (only one opens at a time), and tap any item for its details.
+   - **Frameworks** — tap a framework to see exactly which of its requirements are covered (directly, or via the NIST crosswalk) and which aren't.
+   - **Vulnerabilities**, **Assets**, **Regulatory** — real CVE impact, the asset inventory, and the notification duties that follow from the regulatory profile.
+
+The demo is **read-only**: everyone shares it, so saving connector credentials, running connectors and editing data are switched off there (the API returns `403`). To try those, register your own account.
+
+### With your own account
+
+Click **Register** on the login screen and enter an organisation name — you get your own empty, private tenant. A new tenant needs a few controls and risks before connector results have anything to land on; `api/seed_real_tenant.py` creates that starter set (it needs the API key — request one via a GitHub issue).
+
+### With your own Wazuh
+
+The Wazuh connector reads agents, SCA (configuration) results and — optionally, via the Wazuh indexer — per-device CVE findings. Because the API runs in the cloud, your Wazuh manager API (port 55000) must be reachable over public HTTPS; for a lab or home setup, a tunnel such as [ngrok](https://ngrok.com) works. Private and LAN addresses are deliberately rejected. In your own tenant: **Connectors → Wazuh**, enter the manager URL and a Wazuh **API** user (e.g. `wazuh-wui`, not the dashboard `admin` login), save, and run. Each agent becomes an asset; Critical/High CVEs reported for it become linked risks, so the device shows up in Blast Radius.
+
+---
+
+## API Walkthrough
 
 The public API is live and authenticated. To try it:
 
@@ -50,6 +70,8 @@ curl https://graphrisk.onrender.com/api/v1/graph/vulnerability-impact/CVE-2024-2
 
 **Expected response:** the VPN Gateway is exposed, the risks and controls on it, and two 24-hour clocks (CBK and the banking-sector SOC). There's no 72-hour Data Commissioner clock, because the VPN gateway holds no personal data — the clocks follow what's actually affected.
 
+As in the browser, the demo account is read-only through the API: `GET` requests work, anything that changes data returns `403`.
+
 ---
 
 ## What's Actually Built
@@ -60,6 +82,8 @@ curl https://graphrisk.onrender.com/api/v1/graph/vulnerability-impact/CVE-2024-2
 - **Regulatory crosswalk** — requirements from the Kenya Data Protection Act 2019, the CBK Guidance Note on Cybersecurity (banks), the CBK Guideline on Cybersecurity for Payment Service Providers and the 2024 Critical Information Infrastructure Regulations are linked to the NIST 800-53 and CSF controls they correspond to via `MAPS_TO` edges, so controls a tenant already has count toward Kenyan obligations with no extra mapping work. Coverage is reported as direct vs. via-crosswalk, and only controls that are actually in place (Implemented or Partially Implemented) count. Blast-radius results group frameworks into standards, the organisation's own regulations and other regulations the control supports; `?scope=applicable` shows only what applies.
 - **Regulatory notification clocks** — each organisation declares which frameworks it's subject to and which assets hold personal data. Blast-radius and vulnerability-impact results then list the notification duties that would apply if the exposure became a breach: who to notify, the deadline (2, 24, 48 or 72 hours), the legal source, and which affected assets trigger it. A Kenyan bank can face three separate clocks from one incident; GraphRisk shows all of them, and only the ones that actually apply.
 - **Vendor breach cascade** — given a third-party vendor breach, the graph traverses `PROVIDES → Asset → Risk` edges to surface every activated risk and flag any under-implemented mitigating controls.
+- **Connector-discovered assets** — connectors can report the devices they see, not just pass/fail checks. Each Wazuh agent becomes an `Asset`; per-device Critical/High CVE findings become `Vulnerability` nodes linked to it and roll into tenant risks (CISA-KEV ransomware-flagged CVEs into *Ransomware Infection Risk*, the rest into *Unpatched Vulnerability Risk*), reusing whatever controls already mitigate those risks — so a real device appears in Blast Radius as soon as it has real findings.
+- **Per-requirement framework coverage** — beyond the coverage percentage, every requirement in a framework is reported as covered directly, covered via the crosswalk, or not covered, along with which of the tenant's controls satisfy it.
 - **Automatic vulnerability correlation** — bidirectional: daily threat intelligence sync auto-links newly-published CVEs to matching assets by vendor/product name (with structured CPE-based matching, not free-text search), and newly-onboarded assets are immediately checked against the full vulnerability history at creation time. Either direction cascades risk score updates without manual triage.
 
 ### Universal Connector Architecture
@@ -71,7 +95,7 @@ A three-layer adapter pattern (BaseConnector → per-vendor Adapter → CheckReg
 | Microsoft Entra ID | OAuth 2.0 client credentials | 5 | Structurally complete |
 | AWS | SDK-managed IAM keys (boto3) | 4 | Offline-verified via moto |
 | Okta | Static API key header | 4 | Offline-verified via responses |
-| Wazuh | HTTP Basic → session JWT (self-hosted SIEM/XDR) | 2 | Structurally complete; pending a live instance |
+| Wazuh | HTTP Basic → session JWT (self-hosted SIEM/XDR) | 2 | Live-verified against a self-hosted manager (agent connectivity + SCA); indexer-backed CVE detection offline-verified |
 | CrowdStrike Falcon | OAuth 2.0 client credentials | 4 | Offline-verified via responses; pending a live tenant |
 | Qualys VM | HTTP Basic (per request), XML-only API | 4 | Offline-verified via responses; pending a live subscription |
 
@@ -98,7 +122,7 @@ Real-world, authoritative data — not synthetic demo content.
 | AI-generated summaries | 1,999 nodes | Generated once via Claude |
 
 ### Multi-Tenant Authentication
-JWT-based authentication backed by PostgreSQL (Neon). Every data-bearing endpoint derives `tenant_id` from the verified JWT — not from a client-supplied query parameter. Tenant isolation is enforced at the graph query level.
+JWT-based authentication backed by PostgreSQL (Neon). Every data-bearing endpoint derives `tenant_id` from the verified JWT — not from a client-supplied query parameter. Tenant isolation is enforced at the graph query level. Tenants listed in `READ_ONLY_TENANTS` (the shared demo, by default) can be read but not changed through the API; `seed_demo.py` reseeds it with a server-side `MAINTENANCE_TOKEN`.
 
 ---
 
@@ -136,6 +160,8 @@ Browser / API Client
 
 ## Running Locally
 
+> **Note:** the Cypher query library lives in a separate private package, `graphrisk-core`, which `api/app/graph/queries.py` imports and which isn't in `requirements.txt`. Without access to it the API won't start from this repo alone — the hosted app above is the way to try GraphRisk. The test suite doesn't need it (see below).
+
 **Prerequisites:** Docker Desktop, Python 3.12, Flutter 3.x
 
 **1. Start the graph database:**
@@ -161,6 +187,7 @@ uvicorn app.main:app --reload --port 8000
 python -m app.db.init_db
 python seed_demo.py
 ```
+The demo tenant is read-only by default, so for a local server either set `READ_ONLY_TENANTS=` (empty) in `.env`, or set the same `MAINTENANCE_TOKEN` in both `.env` and your shell before seeding.
 
 **4. Run the Flutter UI:**
 ```bash
@@ -184,6 +211,13 @@ python ingest/10_kenya_dpa.py         # Kenya DPA + NIST crosswalk
 python ingest/11_kenya_cyber_regs.py  # CBK banks/PSPs + CMCA CII regulations
 ```
 
+**Running the tests** (no database or `graphrisk-core` needed — the suite stubs both):
+```bash
+cd api
+python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest tests -q
+```
+
 ---
 
 ## Honest Limitations
@@ -198,7 +232,10 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 | Universal connector pattern | ✅ Proven across 4 auth patterns |
 | Persistent connector credentials | ✅ Fernet-encrypted at rest (Neo4j-backed), owner/admin only, values never returned to the client — live-verified save → reuse → clear cycle in the Flutter UI |
 | Vulnerability-to-asset correlation | ✅ Automated — daily sync + at asset onboarding |
-| Flutter Web frontend | ✅ Live on Firebase Hosting |
+| Flutter Web frontend | ✅ Live on Firebase Hosting — each screen has its own URL (browser Back/Forward work), and the session survives a reload for the life of the tab |
+| Shared public demo | ✅ Read-only through the API (writes return 403), so visitors can't change data or store credentials in the shared tenant |
+| New-tenant onboarding | ⚠️ A fresh tenant needs starter controls/risks before connector results show up; today that's `seed_real_tenant.py` (needs the API key), not an in-app step |
+| Self-hosting | ⚠️ The API depends on the private `graphrisk-core` query package, so it can't be run from this repo alone |
 | Multi-tenancy | ✅ JWT-enforced tenant scoping on every data endpoint (PostgreSQL on Neon free tier) |
 | GitHub Actions daily sync | ✅ Running reliably against Google Cloud Neo4j (18/19 recent runs succeeded) |
 | Connector coverage | ⚠️ 7 connectors vs. 200+ in mature tools |
@@ -213,11 +250,14 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 
 - [x] Regulatory profile, personal-data flags and notification clocks in the Flutter UI
 - [ ] Real vendor credential testing (AWS free tier, Okta developer org, CrowdStrike/Qualys trial)
-- [ ] Wazuh / CrowdStrike / Qualys connector live-data validation (pending real credentials/instances)
+- [x] Wazuh connector live-data validation (agent connectivity + SCA)
+- [ ] Wazuh indexer vulnerability detection — live validation
+- [ ] CrowdStrike / Qualys connector live-data validation (pending real tenants)
+- [ ] In-app starter setup for newly registered tenants
 - [x] CrowdStrike / Qualys connector adapters
 - [x] Connector management UI in Flutter
 - [x] Persistent encrypted connector credential storage
-- [ ] Graph canvas visualization for blast radius
+- [x] Graph visualization for blast radius (expandable hub-and-spoke view)
 - [ ] CIS Controls commercial licensing review (required before paid use)
 
 ---
@@ -237,6 +277,9 @@ graphrisk/
 │   │   │   └── adapters/   # Entra ID, AWS, Okta, Wazuh, CrowdStrike, Qualys
 │   │   ├── db/             # SQLAlchemy models + Neon PostgreSQL
 │   │   └── graph/          # Neo4j connection + Cypher queries
+│   ├── tests/              # pytest suite (graph + private query package stubbed)
+│   ├── seed_demo.py        # Seeds the shared demo tenant
+│   ├── seed_real_tenant.py # Starter controls/risks for a real tenant
 │   └── requirements.txt
 ├── data-ingestion/         # Python ingestion scripts (DS-01 through DS-11)
 │   ├── ingest/             # One script per data source
