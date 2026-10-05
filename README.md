@@ -18,13 +18,25 @@ One change. Automatic cascade. No spreadsheet.
 
 ---
 
+## Where It Fits
+
+GraphRisk isn't meant to replace the security and compliance tools an organisation already uses. It sits on top of them and connects what they report into one picture of risk.
+
+- **Monitoring and scanning tools** (SIEM/XDR, endpoint protection, vulnerability scanners, identity providers) report what's happening on each device and account. GraphRisk pulls those findings in through connectors and links them to the organisation's risks, controls and assets.
+- **Compliance programmes** track whether each control is in place. GraphRisk adds what a control's failure would expose, and which obligations — including Kenyan regulation — that touches.
+- **Risk registers** list risks. GraphRisk ties each one to the assets it affects and the specific CVEs behind it, so the register reflects what the tools are actually finding.
+
+It's built with organisations in Kenya and East Africa in mind: those that need to meet the Data Protection Act and sector cybersecurity rules, may already run open-source tooling such as Wazuh, and want one place to see how technical findings translate into risk and regulatory exposure.
+
+---
+
 ## Try It
 
 ### In the browser (no setup)
 
 1. Open [graphrisk-735a0.web.app](https://graphrisk-735a0.web.app) and click **Use demo credentials**, then **Log in**.
 2. You're in the demo organisation — a Kenyan commercial bank. Things worth trying:
-   - **Blast Radius** — pick a control from the dropdown (e.g. *Multi-Factor Authentication*). **List** view shows the full cascade; **Graph** view shows the control at the hub with one node per category — tap a category to expand it (only one opens at a time), and tap any item for its details.
+   - **Blast Radius** — pick a control from the dropdown (e.g. *Multi-Factor Authentication*). **List** view shows the full cascade, with a **Root cause** under each exposed risk and asset (the CVEs behind the link, with severity, CVSS and a *Known ransomware use* flag from CISA KEV); **Graph** view shows the control at the hub with one node per category — tap a category to expand it (only one opens at a time), and tap any item for its details.
    - **Frameworks** — tap a framework to see exactly which of its requirements are covered (directly, or via the NIST crosswalk) and which aren't.
    - **Vulnerabilities**, **Assets**, **Regulatory** — real CVE impact, the asset inventory, and the notification duties that follow from the regulatory profile.
 
@@ -36,7 +48,9 @@ Click **Register** on the login screen and enter an organisation name — you ge
 
 ### With your own Wazuh
 
-The Wazuh connector reads agents, SCA (configuration) results and — optionally, via the Wazuh indexer — per-device CVE findings. Because the API runs in the cloud, your Wazuh manager API (port 55000) must be reachable over public HTTPS; for a lab or home setup, a tunnel such as [ngrok](https://ngrok.com) works. Private and LAN addresses are deliberately rejected. In your own tenant: **Connectors → Wazuh**, enter the manager URL and a Wazuh **API** user (e.g. `wazuh-wui`, not the dashboard `admin` login), save, and run. Each agent becomes an asset; Critical/High CVEs reported for it become linked risks, so the device shows up in Blast Radius.
+The Wazuh connector reads agents, SCA (configuration) results and — optionally, via the Wazuh indexer — per-device CVE findings. Because the API runs in the cloud, your Wazuh manager API (port 55000) must be reachable over public HTTPS; for a lab or home setup, a tunnel such as [ngrok](https://ngrok.com) works. Private and LAN addresses are deliberately rejected. In your own tenant: **Connectors → Wazuh**, enter the manager URL and a Wazuh **API** user (e.g. `wazuh-wui`, not the dashboard `admin` login), save, and run. Each agent becomes an asset; Critical/High CVEs reported for it become linked risks, so the device shows up in Blast Radius — with the specific CVEs listed as its root cause.
+
+Per-device CVEs come from the Wazuh **indexer** (port 9200), which needs its own public HTTPS address (a second tunnel — e.g. a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/), since ngrok's free plan allows one endpoint) and must listen on more than `localhost` (`network.host` in `/etc/wazuh-indexer/opensearch.yml`). Enter its URL and the indexer user (e.g. `admin`) in the same connector form. Saving only updates the fields you fill in.
 
 ---
 
@@ -83,6 +97,7 @@ As in the browser, the demo account is read-only through the API: `GET` requests
 - **Regulatory notification clocks** — each organisation declares which frameworks it's subject to and which assets hold personal data. Blast-radius and vulnerability-impact results then list the notification duties that would apply if the exposure became a breach: who to notify, the deadline (2, 24, 48 or 72 hours), the legal source, and which affected assets trigger it. A Kenyan bank can face three separate clocks from one incident; GraphRisk shows all of them, and only the ones that actually apply.
 - **Vendor breach cascade** — given a third-party vendor breach, the graph traverses `PROVIDES → Asset → Risk` edges to surface every activated risk and flag any under-implemented mitigating controls.
 - **Connector-discovered assets** — connectors can report the devices they see, not just pass/fail checks. Each Wazuh agent becomes an `Asset`; per-device Critical/High CVE findings become `Vulnerability` nodes linked to it and roll into tenant risks (CISA-KEV ransomware-flagged CVEs into *Ransomware Infection Risk*, the rest into *Unpatched Vulnerability Risk*), reusing whatever controls already mitigate those risks — so a real device appears in Blast Radius as soon as it has real findings.
+- **Root cause provenance** — every connector-created `Risk → Asset` link records the CVEs that caused it (`IMPACTS.driver_cves`). Blast Radius returns them per link, ransomware-flagged first and then by CVSS, so "this laptop is exposed to Ransomware Infection Risk" comes with *why*: e.g. two WinRAR CVEs CISA lists as used in ransomware campaigns — and therefore what to patch.
 - **Per-requirement framework coverage** — beyond the coverage percentage, every requirement in a framework is reported as covered directly, covered via the crosswalk, or not covered, along with which of the tenant's controls satisfy it.
 - **Automatic vulnerability correlation** — bidirectional: daily threat intelligence sync auto-links newly-published CVEs to matching assets by vendor/product name (with structured CPE-based matching, not free-text search), and newly-onboarded assets are immediately checked against the full vulnerability history at creation time. Either direction cascades risk score updates without manual triage.
 
@@ -95,7 +110,7 @@ A three-layer adapter pattern (BaseConnector → per-vendor Adapter → CheckReg
 | Microsoft Entra ID | OAuth 2.0 client credentials | 5 | Structurally complete |
 | AWS | SDK-managed IAM keys (boto3) | 4 | Offline-verified via moto |
 | Okta | Static API key header | 4 | Offline-verified via responses |
-| Wazuh | HTTP Basic → session JWT (self-hosted SIEM/XDR) | 2 | Live-verified against a self-hosted manager (agent connectivity + SCA); indexer-backed CVE detection offline-verified |
+| Wazuh | HTTP Basic → session JWT (self-hosted SIEM/XDR) | 2 | Live-verified against a self-hosted manager and indexer: agent connectivity, SCA, and per-device CVE findings flowing through to Blast Radius root cause |
 | CrowdStrike Falcon | OAuth 2.0 client credentials | 4 | Offline-verified via responses; pending a live tenant |
 | Qualys VM | HTTP Basic (per request), XML-only API | 4 | Offline-verified via responses; pending a live subscription |
 
@@ -238,10 +253,12 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 | Self-hosting | ⚠️ The API depends on the private `graphrisk-core` query package, so it can't be run from this repo alone |
 | Multi-tenancy | ✅ JWT-enforced tenant scoping on every data endpoint (PostgreSQL on Neon free tier) |
 | GitHub Actions daily sync | ✅ Running reliably against Google Cloud Neo4j (18/19 recent runs succeeded) |
-| Connector coverage | ⚠️ 7 connectors vs. 200+ in mature tools |
+| Connector coverage | ⚠️ 7 connectors so far (Wazuh live-verified); more planned, and each new one is a single adapter file |
 | Sync correlation scope | ℹ️ Daily sync correlates new CVEs against the demo tenant by design — that's the account anyone testing GraphRisk logs into, so it stays populated with live data rather than sitting on months-old seed data. Not yet extended to arbitrary tenants. |
 | Kenyan regulatory crosswalk | ⚠️ GraphRisk-curated mappings, not an official crosswalk — coverage means mapped controls are in place, not legal compliance (not legal advice). All 27 Data Protection Act / General Regulations 2021 requirements now cite the exact statutory section or regulation sub-clause (verified against the primary text, including regulation 32(a)-(k) of the 2021 Regulations in full). |
 | Regulatory clocks | ⚠️ Driven by a self-declared regulatory profile and per-asset personal-data flags. Deadlines run from becoming aware of a breach, and whether an incident is "significant" enough to report is a human judgement GraphRisk doesn't make — it shows the duty and its condition. Live in the Flutter UI (Regulatory Profile screen, Assets screen, and as a layer on Blast Radius / Vulnerability Impact) as well as the API. |
+| Root cause | ✅ Live — CVEs behind each connector-created risk link, with CISA KEV ransomware flag. Links created before this feature (or by hand) show "No CVE recorded" until the connector runs again. CISA KEV publishes no CVSS, so a KEV-only CVE shows severity alone until NVD or the scanner supplies a score. |
+| Connector scheduling | ⚠️ Connectors run on demand; no scheduled runs yet. Self-hosted tools behind a quick tunnel need the tunnel up (and its URL re-saved if it changed) for each run. |
 | Production hardening | ⚠️ e2-micro Neo4j VM is memory-constrained (~1.4s query latency) |
 
 ---
@@ -251,7 +268,10 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 - [x] Regulatory profile, personal-data flags and notification clocks in the Flutter UI
 - [ ] Real vendor credential testing (AWS free tier, Okta developer org, CrowdStrike/Qualys trial)
 - [x] Wazuh connector live-data validation (agent connectivity + SCA)
-- [ ] Wazuh indexer vulnerability detection — live validation
+- [x] Wazuh indexer vulnerability detection — live validation
+- [x] Root cause (driving CVEs) for each exposed risk and asset
+- [ ] Scheduled connector runs
+- [ ] Downloadable compliance / blast-radius report (audit evidence)
 - [ ] CrowdStrike / Qualys connector live-data validation (pending real tenants)
 - [ ] In-app starter setup for newly registered tenants
 - [x] CrowdStrike / Qualys connector adapters
