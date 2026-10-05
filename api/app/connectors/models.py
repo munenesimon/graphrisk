@@ -82,6 +82,16 @@ class CheckResult:
     #     Security Advisories for OS-package and npm/pip-style CVEs.
     # Adapter-agnostic either way -- Qualys or CrowdStrike Spotlight could
     # report through the exact same field with no registry changes needed.
+    #
+    # Two more optional keys per entry:
+    #   - "profile": {section: {field: value}} -- device detail in the
+    #     universal profile shape (see connectors/profile.py), limited to
+    #     the sections the adapter declares in PROFILE_SECTIONS. Stored per
+    #     (asset, connector, section), merged across connectors on read.
+    #   - "profile_only": True -- only update the profile of an asset that
+    #     already exists (matched by name); never create one. For a check
+    #     that adds detail (e.g. configuration results) about devices
+    #     another check is responsible for discovering.
     discovered_assets: list[dict] = field(default_factory=list)
 
     @property

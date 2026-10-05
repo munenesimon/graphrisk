@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart' show VoidCallback;
 import 'package:http/http.dart' as http;
 import '../models/dashboard.dart';
 import 'session_store.dart';
+import '../models/asset_profile.dart';
 
 /// Thrown when a request fails because there is no valid session.
 /// Screens can catch this specifically to redirect to the login screen.
@@ -297,6 +298,14 @@ class ApiService {
     final data = await _get('/assets/');
     final list = data['assets'] as List? ?? [];
     return list.map((a) => Asset.fromJson(a as Map<String, dynamic>)).toList();
+  }
+
+  // Everything the asset page shows: the merged device profile from every
+  // connector reporting on this asset, what to patch first, linked
+  // vulnerabilities and risks.
+  static Future<AssetProfile> getAssetProfile(String assetId) async {
+    final data = await _get('/assets/$assetId/profile');
+    return AssetProfile.fromJson(data);
   }
 
   static Future<void> setAssetDataClassification(String assetId, bool holdsPersonalData) async {

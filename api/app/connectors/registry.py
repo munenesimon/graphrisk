@@ -150,6 +150,12 @@ class CheckRegistry:
                 if not name:
                     continue
                 asset_id = existing_ids_by_name.get(name)
+                if asset.get("profile_only"):
+                    # Detail about a device some other check discovers --
+                    # never create an asset from it (see models.py).
+                    if asset_id is not None:
+                        self._store_profile(asset.get("profile"), asset_id, tenant_id, result)
+                    continue
                 if asset_id is None:
                     asset_id = str(uuid.uuid4())
                     run_write(queries.CREATE_ASSET, {
@@ -173,6 +179,8 @@ class CheckRegistry:
                         "asset_id": asset_id, "tenant_id": tenant_id,
                     })
                     existing_ids_by_name[name] = asset_id
+
+                self._store_profile(asset.get("profile"), asset_id, tenant_id, result)
 
                 for vuln in asset.get("vulnerabilities", []):
                     # A plain CVE id string means "link this if we already
@@ -203,6 +211,41 @@ class CheckRegistry:
                     })
         except Exception as e:
             logger.error(f"Asset ingestion failed for {result.check_id}: {e}")
+
+    def _store_profile(self, raw_profile, asset_id: str, tenant_id: str, result: CheckResult) -> None:
+        """
+        Store a discovered asset's device profile, one snapshot per section,
+        keyed on (asset, connector, section): a later run of the same
+        connector replaces only its own sections, and another connector's
+        view of the same device is never overwritten. Sections the adapter
+        didn't declare in PROFILE_SECTIONS are ignored, so the declared
+        capability and the stored data can't drift apart. A storage failure
+        is logged and skipped -- device detail is never worth failing the
+        connector run (or the asset/vulnerability writes) over.
+        """
+        from .profile import normalize_profile, to_storage
+        profile = normalize_profile(raw_profile)
+        if not profile:
+            return
+        adapter_class = self._adapters.get(result.source)
+        declared = set(getattr(adapter_class, "PROFILE_SECTIONS", ()) or ())
+        try:
+            from app.graph.connection import run_write
+            from app.graph import queries
+            for section, fields in profile.items():
+                if section != "extra" and section not in declared:
+                    logger.warning(f"{result.source} reported undeclared profile section {section!r} -- ignored")
+                    continue
+                run_write(queries.UPSERT_ASSET_PROFILE_SECTION, {
+                    "asset_id": asset_id,
+                    "tenant_id": tenant_id,
+                    "source": result.source,
+                    "section": section,
+                    "data": to_storage(fields),
+                    "collected_at": result.executed_at.isoformat(),
+                })
+        except Exception as e:
+            logger.error(f"Profile write failed for asset {asset_id} from {result.source}: {e}")
 
     # Severity -> (likelihood, impact) for a freshly-created Risk, on the
     # same 1-5 scale seed_demo.py's hand-authored risks use (e.g. "Identity
@@ -282,6 +325,16 @@ class CheckRegistry:
             "cve_id": vuln.get("cve_id"),
             "source": vuln.get("source", "connector"),
         })
+
+    @property
+    def profile_capabilities(self) -> dict[str, dict]:
+        """connector_id -> {"name", "sections"} for every connector that can
+        fill in any part of the device profile."""
+        return {
+            cid: {"name": cls.CONNECTOR_NAME, "sections": list(cls.PROFILE_SECTIONS)}
+            for cid, cls in self._adapters.items()
+            if getattr(cls, "PROFILE_SECTIONS", ())
+        }
 
     @property
     def registered_connectors(self) -> list[str]:

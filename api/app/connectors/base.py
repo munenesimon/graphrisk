@@ -125,6 +125,13 @@ class BaseConnector(ABC):
     # missing-config errors can be reported clearly before any request is made.
     REQUIRED_CONFIG_KEYS: list[str] = []
 
+    # Which sections of the universal device profile (see profile.py) this
+    # connector can fill in for the assets it discovers -- its *capability*.
+    # Empty for connectors that don't report individual devices. The asset
+    # page uses this to say which connected tools could supply a section
+    # that's currently missing.
+    PROFILE_SECTIONS: tuple[str, ...] = ()
+
     def __init__(self, tenant_id: str, config: dict):
         self.tenant_id = tenant_id
         self.config    = config

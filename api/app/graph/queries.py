@@ -58,3 +58,44 @@ MERGE_VULNERABILITY_FROM_FINDING = """
             ELSE v.description END
     RETURN v.id AS id, v.ransomware_use AS ransomware_use
 """
+
+
+# ── Universal device profile (see app/connectors/profile.py) ────────────────
+# One snapshot node per (asset, connector, section). The data itself is a
+# JSON string -- Neo4j properties can't hold nested maps -- and is only ever
+# read back whole, never queried into.
+UPSERT_ASSET_PROFILE_SECTION = """
+    MATCH (a:Asset {id: $asset_id, tenant_id: $tenant_id})
+    MERGE (a)-[:HAS_PROFILE]->(p:AssetProfileSection {
+        asset_id: $asset_id, tenant_id: $tenant_id, source: $source, section: $section
+    })
+    SET p.data = $data, p.collected_at = $collected_at
+    RETURN p.section AS section
+"""
+
+GET_ASSET_PROFILE_SECTIONS = """
+    MATCH (a:Asset {id: $asset_id, tenant_id: $tenant_id})-[:HAS_PROFILE]->(p:AssetProfileSection)
+    RETURN p.source AS source, p.section AS section, p.data AS data, p.collected_at AS collected_at
+"""
+
+# Everything the asset page shows besides the profile itself: the asset's
+# own properties, the risks it's under (with the CVEs recorded as each
+# link's root cause, and the controls mitigating each risk), and the
+# vulnerabilities linked to it.
+GET_ASSET_DETAIL = """
+    MATCH (a:Asset {id: $asset_id, tenant_id: $tenant_id})
+    OPTIONAL MATCH (r:Risk)-[i:IMPACTS]->(a)
+    OPTIONAL MATCH (c:Control)-[:MITIGATES]->(r)
+    WITH a, r, i, collect(DISTINCT CASE WHEN c IS NULL THEN NULL ELSE
+         {id: c.id, title: c.title, status: c.implementation_status,
+          effectiveness: c.effectiveness_score} END) AS controls
+    WITH a, collect(CASE WHEN r IS NULL THEN NULL ELSE
+         {id: r.id, title: r.title, risk_score: r.risk_score,
+          likelihood: r.likelihood, impact: r.impact,
+          driver_cves: coalesce(i.driver_cves, []), controls: controls} END) AS risks
+    OPTIONAL MATCH (v:Vulnerability)-[:EXPOSES]->(a)
+    WITH a, risks, collect(DISTINCT CASE WHEN v IS NULL THEN NULL ELSE
+         {cve_id: v.id, severity: v.severity, cvss_score: v.cvss_score,
+          ransomware_use: v.ransomware_use, description: v.description} END) AS vulns
+    RETURN a {.*} AS asset, risks, vulns AS vulnerabilities
+"""

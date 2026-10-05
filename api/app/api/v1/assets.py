@@ -41,6 +41,113 @@ async def get_asset(asset_id: str, user: CurrentUser = Depends(get_current_user)
         raise HTTPException(status_code=404, detail=f"Asset {asset_id} not found")
     return result[0]
 
+_SEVERITY_RANK = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+MAX_VULNERABILITIES_SHOWN = 50
+
+
+def _is_known_ransomware(value) -> bool:
+    return value is True or str(value or "").strip().lower() == "known"
+
+
+def _num(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fix_first(packages: list, vulns_by_id: dict) -> list:
+    """Vulnerable software, one entry per package, with the CVEs behind it
+    and whether any is known to be used in ransomware -- the "what do I
+    patch first" list. Ransomware-linked packages first, then by worst
+    CVSS, then by number of CVEs."""
+    out = []
+    for pkg in packages or []:
+        if not isinstance(pkg, dict) or not pkg.get("name"):
+            continue
+        cves = []
+        for cve_id in pkg.get("cve_ids") or []:
+            v = vulns_by_id.get(cve_id, {})
+            cves.append({
+                "cve_id": cve_id,
+                "severity": v.get("severity"),
+                "cvss_score": v.get("cvss_score"),
+                "ransomware": _is_known_ransomware(v.get("ransomware_use")),
+            })
+        cves.sort(key=lambda c: (not c["ransomware"], -_num(c["cvss_score"])))
+        out.append({
+            "name": pkg.get("name"),
+            "version": pkg.get("version"),
+            "cves": cves,
+            "cve_count": pkg.get("cve_count") or len(cves),
+            "max_severity": pkg.get("max_severity"),
+            "ransomware": any(c["ransomware"] for c in cves),
+            "max_cvss": max([_num(c["cvss_score"]) for c in cves] or [0.0]),
+        })
+    out.sort(key=lambda p: (not p["ransomware"], -p["max_cvss"], -p["cve_count"]))
+    return out
+
+
+@router.get("/{asset_id}/profile")
+async def get_asset_profile(asset_id: str, user: CurrentUser = Depends(get_current_user)):
+    """
+    Everything the asset page shows, from every connector that reports on
+    this asset, merged into the universal device profile (see
+    app/connectors/profile.py): one section per kind of detail, each field
+    labelled with the connector it came from. Sensitive fields (IPs, MAC
+    addresses, serial numbers, assigned user) are hidden from anyone but an
+    owner/admin, and always in a read-only shared tenant like the demo.
+    """
+    from app.auth.read_only import is_read_only_tenant
+    from app.connectors.profile import SECTIONS, merge_sections, mask_sensitive
+    from app.connectors.registry import registry
+
+    tenant_id = user.graph_tenant_id
+    detail = run_query(queries.GET_ASSET_DETAIL, {"asset_id": asset_id, "tenant_id": tenant_id})
+    if not detail:
+        raise HTTPException(status_code=404, detail=f"Asset {asset_id} not found")
+    detail = detail[0]
+
+    caps = registry.profile_capabilities
+    names = {cid: c["name"] for cid, c in caps.items()}
+    rows = run_query(queries.GET_ASSET_PROFILE_SECTIONS, {"asset_id": asset_id, "tenant_id": tenant_id})
+    profile = merge_sections(rows, names)
+
+    can_view_sensitive = user.role in ("owner", "admin") and not is_read_only_tenant(tenant_id)
+    hidden = [] if can_view_sensitive else mask_sensitive(profile)
+
+    vulns = [v for v in (detail.get("vulnerabilities") or []) if v and v.get("cve_id")]
+    vulns_by_id = {v["cve_id"]: v for v in vulns}
+    packages = (profile.get("software", {}).get("fields", {}) or {}).get("vulnerable_packages", [])
+    vulns.sort(key=lambda v: (
+        not _is_known_ransomware(v.get("ransomware_use")),
+        -_SEVERITY_RANK.get(v.get("severity"), 0),
+        -_num(v.get("cvss_score")),
+    ))
+
+    return {
+        "asset": detail.get("asset") or {},
+        "profile": profile,
+        "hidden_fields": hidden,
+        "can_view_sensitive": can_view_sensitive,
+        # Which connectors *could* fill each section -- lets the page say
+        # "connect X to see this" for a section nothing has reported yet.
+        "capabilities": {
+            section: [c["name"] for c in caps.values() if section in c["sections"]]
+            for section in SECTIONS
+        },
+        "fix_first": _fix_first(packages, vulns_by_id),
+        "vulnerabilities": {
+            "total": len(vulns),
+            "items": [
+                {**v, "ransomware": _is_known_ransomware(v.get("ransomware_use"))}
+                for v in vulns[:MAX_VULNERABILITIES_SHOWN]
+            ],
+        },
+        "risks": [r for r in (detail.get("risks") or []) if r and r.get("id")],
+    }
+
+
 @router.post("/", status_code=201)
 async def create_asset(asset: AssetCreate, user: CurrentUser = Depends(get_current_user)):
     asset_id = str(uuid.uuid4())

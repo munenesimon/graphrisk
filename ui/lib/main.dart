@@ -7,6 +7,7 @@ import 'screens/frameworks_screen.dart';
 import 'screens/framework_detail_screen.dart';
 import 'screens/vulnerability_screen.dart';
 import 'screens/assets_screen.dart';
+import 'screens/asset_detail_screen.dart';
 import 'screens/regulatory_profile_screen.dart';
 import 'screens/connectors_screen.dart';
 import 'screens/login_screen.dart';
@@ -123,7 +124,20 @@ final _router = GoRouter(
           builder: (context, state) =>
               VulnerabilityScreen(onManageProfile: () => context.go('/regulatory')),
         ),
-        GoRoute(path: '/assets', builder: (context, state) => const AssetsScreen()),
+        GoRoute(
+          path: '/assets',
+          builder: (context, state) => const AssetsScreen(),
+          routes: [
+            GoRoute(
+              path: ':id',
+              builder: (context, state) => AssetDetailScreen(
+                key: ValueKey('asset-${state.pathParameters['id']}'),
+                assetId: state.pathParameters['id']!,
+                assetName: state.uri.queryParameters['name'] ?? 'Asset',
+              ),
+            ),
+          ],
+        ),
         GoRoute(path: '/regulatory', builder: (context, state) => const RegulatoryProfileScreen()),
         GoRoute(path: '/connectors', builder: (context, state) => const ConnectorsScreen()),
       ],

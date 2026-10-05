@@ -87,11 +87,32 @@ DEFAULT_MIN_VULNERABILITY_SEVERITIES = {"Critical", "High"}
 # findings.
 MAX_VULNERABILITIES_PER_RUN = 500
 
+# Device inventory (Wazuh's syscollector: hardware, OS detail, network
+# interfaces, listening ports, package/hotfix counts) costs a handful of
+# requests per agent, so it's capped like the SCA sweep. Turn it off per
+# tenant with config["collect_inventory"] = False.
+MAX_AGENTS_PER_INVENTORY = 50
+# Failed SCA checks fetched per policy for the device profile -- the top of
+# the list, not the whole benchmark (the Wazuh dashboard has the rest).
+MAX_FAILED_CHECKS_PER_POLICY = 10
+
+_AGENT_STATUS_LABELS = {
+    "active": "online",
+    "disconnected": "offline",
+    "never_connected": "never connected",
+    "pending": "pending",
+}
+
 
 class WazuhAdapter(BaseConnector):
     CONNECTOR_ID   = "wazuh"
     CONNECTOR_NAME = "Wazuh"
     REQUIRED_CONFIG_KEYS = ["api_url", "username", "password"]
+    # What this connector can tell GraphRisk about each device (see
+    # connectors/profile.py). Hardware/network/software need syscollector;
+    # vulnerabilities need the indexer credentials.
+    PROFILE_SECTIONS = ("identity", "health", "os", "hardware", "network",
+                        "software", "vulnerabilities", "configuration")
 
     def authenticate(self) -> None:
         base_url = self.config["api_url"].rstrip("/")
@@ -213,6 +234,7 @@ class WazuhAdapter(BaseConnector):
                 "agent.id", "vulnerability.id", "vulnerability.severity",
                 "vulnerability.score.base", "vulnerability.description",
                 "vulnerability.published_at", "vulnerability.scanner.source",
+                "package.name", "package.version",
             ],
             "query": {
                 "bool": {
@@ -233,7 +255,7 @@ class WazuhAdapter(BaseConnector):
             if not agent_id or not cve_id:
                 continue
             scanner_source = (vuln.get("scanner") or {}).get("source", "")
-            by_agent.setdefault(agent_id, []).append({
+            entry = {
                 "cve_id": cve_id,
                 "severity": vuln.get("severity", "Unknown"),
                 "cvss_score": (vuln.get("score") or {}).get("base", 0.0),
@@ -243,8 +265,199 @@ class WazuhAdapter(BaseConnector):
                 "description": (vuln.get("description") or "")[:600],
                 "published_at": vuln.get("published_at", ""),
                 "source": f"Wazuh ({scanner_source})" if scanner_source else "Wazuh",
-            })
+            }
+            # Which installed software the finding is in -- what the asset
+            # page groups CVEs by ("update WinRAR" rather than two CVE ids).
+            package = src.get("package") or {}
+            if package.get("name"):
+                entry["package"] = {"name": package.get("name"), "version": package.get("version")}
+            by_agent.setdefault(agent_id, []).append(entry)
         return by_agent
+
+    def _fetch_severity_counts(self, agent_ids: list[str]) -> dict[str, dict[str, int]]:
+        """
+        Findings per agent per severity, across *all* severities -- the
+        ingested list above is filtered to Critical/High, but the device
+        profile should show the real totals. One aggregation request, no
+        documents returned. {} on anything unexpected.
+        """
+        if not agent_ids:
+            return {}
+        resp = self._indexer_search("wazuh-states-vulnerabilities-*", {
+            "size": 0,
+            "query": {"terms": {"agent.id": agent_ids}},
+            "aggs": {"by_agent": {
+                "terms": {"field": "agent.id", "size": len(agent_ids)},
+                "aggs": {"by_severity": {"terms": {"field": "vulnerability.severity", "size": 10}}},
+            }},
+        })
+        out: dict[str, dict[str, int]] = {}
+        buckets = (((resp.get("aggregations") or {}).get("by_agent") or {}).get("buckets")) or []
+        for b in buckets:
+            sev = {s.get("key"): s.get("doc_count", 0)
+                   for s in ((b.get("by_severity") or {}).get("buckets") or []) if s.get("key")}
+            if b.get("key"):
+                out[str(b["key"])] = sev
+        return out
+
+    def _fetch_inventory(self, agent_id: str) -> dict | None:
+        """
+        Device detail from Wazuh's syscollector inventory, as partial
+        profile sections. Each request is independent -- one failing (an
+        older manager, the module disabled on that agent) only drops that
+        part. Returns None when *every* request failed, which the caller
+        treats as "syscollector isn't available on this manager".
+        """
+        succeeded = 0
+
+        def get(path: str, params: dict | None = None) -> dict | None:
+            nonlocal succeeded
+            try:
+                data = self._wazuh_get(f"/syscollector/{agent_id}/{path}", params=params).get("data") or {}
+                succeeded += 1
+                return data
+            except Exception as e:
+                logger.debug(f"Wazuh syscollector {path} for agent {agent_id} unavailable: {e}")
+                return None
+
+        def first(data: dict | None) -> dict:
+            items = (data or {}).get("affected_items") or []
+            return items[0] if items else {}
+
+        prof: dict[str, dict] = {}
+        hw = first(get("hardware"))
+        if hw:
+            cpu = hw.get("cpu") or {}
+            ram = hw.get("ram") or {}
+            prof["hardware"] = {
+                "cpu": cpu.get("name"),
+                "cpu_cores": cpu.get("cores"),
+                "memory_total_mb": round(ram["total"] / 1024) if isinstance(ram.get("total"), (int, float)) else None,
+                "memory_used_percent": ram.get("usage"),
+            }
+            serial = str(hw.get("board_serial") or "").strip()
+            if serial and serial.lower() not in ("none", "not specified", "default string", "to be filled by o.e.m."):
+                prof["identity"] = {"serial_number": serial}
+
+        os_item = first(get("os"))
+        if os_item:
+            os_info = os_item.get("os") or {}
+            prof["os"] = {"kernel": os_item.get("release"), "build": os_info.get("build")}
+
+        ifaces = (get("netiface", {"limit": 20}) or {}).get("affected_items") or []
+        macs = sorted({i.get("mac") for i in ifaces
+                       if i.get("mac") and i.get("mac") not in ("00:00:00:00:00:00",)})
+        ports_data = get("ports", {"limit": 25, "q": "state=listening"}) or {}
+        ports = []
+        for p in ports_data.get("affected_items") or []:
+            local = p.get("local") or {}
+            if local.get("port") is not None:
+                ports.append({"port": local.get("port"), "protocol": p.get("protocol"),
+                              "process": p.get("process")})
+        if macs or ports:
+            prof["network"] = {"mac_addresses": macs, "listening_ports": ports}
+
+        packages = get("packages", {"limit": 1})
+        hotfixes = get("hotfixes", {"limit": 10})
+        software = {}
+        if packages is not None:
+            software["installed_count"] = packages.get("total_affected_items")
+        if hotfixes is not None:
+            software["hotfixes_count"] = hotfixes.get("total_affected_items")
+            software["recent_hotfixes"] = [h.get("hotfix") for h in hotfixes.get("affected_items") or [] if h.get("hotfix")]
+        if software:
+            prof["software"] = software
+
+        return prof if succeeded else None
+
+    @staticmethod
+    def _vulnerable_packages(vulns: list[dict]) -> list[dict]:
+        """Group this device's findings by the software they're in."""
+        rank = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+        groups: dict[tuple, dict] = {}
+        for v in vulns:
+            pkg = v.get("package") or {}
+            if not pkg.get("name"):
+                continue
+            g = groups.setdefault((pkg["name"], pkg.get("version")), {
+                "name": pkg["name"], "version": pkg.get("version"),
+                "cve_ids": [], "max_severity": None,
+            })
+            if v["cve_id"] not in g["cve_ids"]:
+                g["cve_ids"].append(v["cve_id"])
+            if rank.get(v.get("severity"), 0) > rank.get(g["max_severity"], 0):
+                g["max_severity"] = v.get("severity")
+        out = list(groups.values())
+        for g in out:
+            g["cve_count"] = len(g["cve_ids"])
+        out.sort(key=lambda g: (-rank.get(g["max_severity"], 0), -g["cve_count"]))
+        return out
+
+    def _agent_profile(self, agent: dict, vulns: list[dict], severity_counts: dict | None,
+                       inventory: dict | None) -> dict:
+        """One agent, mapped onto the universal device profile."""
+        os_info = agent.get("os") or {}
+        last_seen = agent.get("lastKeepAlive")
+        if last_seen and str(last_seen).startswith("9999"):
+            last_seen = None  # Wazuh's placeholder for "never connected"
+        ips = []
+        for ip in (agent.get("ip"), agent.get("registerIP")):
+            if ip and ip.lower() != "any" and ip not in ips:
+                ips.append(ip)
+        groups = agent.get("group")
+        profile: dict[str, dict] = {
+            "identity": {
+                "hostname": agent.get("name"),
+                "device_type": "Endpoint",
+                "agent_id": agent.get("id"),
+                "groups": groups if isinstance(groups, list) else ([groups] if groups else None),
+            },
+            "health": {
+                "status": _AGENT_STATUS_LABELS.get(agent.get("status"), agent.get("status")),
+                "last_seen": last_seen,
+                "enrolled_at": agent.get("dateAdd"),
+                "agent_version": agent.get("version"),
+            },
+            "os": {
+                "name": os_info.get("name"),
+                "version": os_info.get("version"),
+                "platform": os_info.get("platform"),
+                "architecture": os_info.get("arch"),
+            },
+            "network": {"ip_addresses": ips},
+        }
+        for section, fields in (inventory or {}).items():
+            profile.setdefault(section, {}).update({k: v for k, v in fields.items() if v is not None})
+        packages = self._vulnerable_packages(vulns)
+        if packages:
+            profile.setdefault("software", {})["vulnerable_packages"] = packages
+        if severity_counts:
+            profile["vulnerabilities"] = {
+                "counts_by_severity": severity_counts,
+                "total": sum(severity_counts.values()),
+                "scanner": "Wazuh vulnerability detection",
+            }
+        return profile
+
+    def _failed_sca_checks(self, agent_id: str, policy_id: str | None) -> list[dict]:
+        """The first few failed checks of one SCA policy, with Wazuh's own
+        remediation text. [] if the policy id is missing or the request fails
+        -- the benchmark score is still useful without them."""
+        if not policy_id:
+            return []
+        try:
+            data = self._wazuh_get(
+                f"/sca/{agent_id}/checks/{policy_id}",
+                params={"result": "failed", "limit": MAX_FAILED_CHECKS_PER_POLICY},
+            )
+        except Exception as e:
+            logger.debug(f"Wazuh failed SCA checks for agent {agent_id}/{policy_id} unavailable: {e}")
+            return []
+        return [
+            {"title": c.get("title"), "remediation": c.get("remediation")}
+            for c in (data.get("data") or {}).get("affected_items") or []
+            if c.get("title")
+        ]
 
     def _control_title(self, check_id: str) -> str:
         return self.config.get("control_titles", {}).get(check_id, DEFAULT_CONTROL_TITLES[check_id])
@@ -303,8 +516,26 @@ class WazuhAdapter(BaseConnector):
         disconnected = total - active
         score = round(active / total, 4) if total > 0 else 0.0
 
+        inventory: dict[str, dict] = {}
+        if self.config.get("collect_inventory", True):
+            for a in agents[:MAX_AGENTS_PER_INVENTORY]:
+                inv = self._fetch_inventory(a.get("id"))
+                if inv is None and not inventory:
+                    # Nothing at all came back for the first agent -- the
+                    # manager doesn't expose syscollector; don't repeat
+                    # the same failing requests for every other agent.
+                    logger.info("Wazuh syscollector unavailable -- skipping device inventory this run")
+                    break
+                if inv:
+                    inventory[a.get("id")] = inv
+
         vulns_by_agent: dict[str, list[dict]] = {}
+        severity_counts: dict[str, dict[str, int]] = {}
         if self._effective_indexer_url():
+            try:
+                severity_counts = self._fetch_severity_counts([a.get("id") for a in agents])
+            except Exception as e:
+                logger.warning(f"Wazuh indexer severity counts unavailable, continuing without them: {e}")
             try:
                 vulns_by_agent = self._fetch_vulnerabilities([a.get("id") for a in agents])
             except Exception as e:
@@ -320,6 +551,8 @@ class WazuhAdapter(BaseConnector):
             agent_vulns = vulns_by_agent.get(a.get("id"))
             if agent_vulns:
                 asset["vulnerabilities"] = agent_vulns
+            asset["profile"] = self._agent_profile(
+                a, agent_vulns or [], severity_counts.get(a.get("id")), inventory.get(a.get("id")))
             discovered_assets.append(asset)
 
         return CheckResult(
@@ -353,19 +586,39 @@ class WazuhAdapter(BaseConnector):
         total_pass = 0
         total_checks = 0
         agents_with_data = 0
+        profiles = []
         for agent in agents:
             sca = self._wazuh_get(f"/sca/{agent['id']}")
             policies = sca.get("data", {}).get("affected_items", [])
             if policies:
                 agents_with_data += 1
+            benchmarks = []
             for policy in policies:
                 total_pass   += policy.get("pass", 0)
                 total_checks += policy.get("total_checks", 0)
+                benchmarks.append({
+                    "name": policy.get("name") or policy.get("policy_id"),
+                    "score": policy.get("score"),
+                    "passed": policy.get("pass"),
+                    "failed": policy.get("fail"),
+                    "total": policy.get("total_checks"),
+                    "scanned_at": policy.get("end_scan"),
+                    "failed_checks": self._failed_sca_checks(agent["id"], policy.get("policy_id")),
+                })
+            if benchmarks:
+                # Detail for the device page only -- this check doesn't
+                # discover devices, so it never creates an asset.
+                profiles.append({
+                    "name": self._agent_to_asset(agent)["name"],
+                    "profile_only": True,
+                    "profile": {"configuration": {"benchmarks": benchmarks}},
+                })
 
         score = round(total_pass / total_checks, 4) if total_checks > 0 else 0.0
         failed = total_checks - total_pass
 
         return CheckResult(
+            discovered_assets=profiles,
             check_id="wazuh_sca_compliance",
             check_name="Wazuh Security Configuration Assessment",
             category=CheckCategory.ENDPOINT,

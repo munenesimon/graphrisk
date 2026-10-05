@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../constants/colors.dart';
 import '../models/dashboard.dart';
 import '../services/api_service.dart';
@@ -112,7 +113,7 @@ class _AssetsScreenState extends State<AssetsScreen> {
         const Text(
           "Flag which assets hold personal data -- this decides whether a data-protection "
           "breach-notice clock (e.g. the Kenya DPA's 72-hour ODPC notice) applies if the asset "
-          "is compromised.",
+          "is compromised. Tap an asset for everything its connectors report about it.",
           style: TextStyle(color: Colors.white38, fontSize: 12, height: 1.5),
         ),
         const SizedBox(height: 20),
@@ -144,7 +145,12 @@ class _AssetsScreenState extends State<AssetsScreen> {
         else
           ...assets.map((a) {
             final busy = _pending.contains(a.id);
-            return Container(
+            // Tapping a row opens the asset page -- everything its
+            // connectors report about the device (see AssetDetailScreen).
+            return InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => context.go('/assets/${a.id}?name=${Uri.encodeQueryComponent(a.name)}'),
+              child: Container(
               margin: const EdgeInsets.only(bottom: 10),
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
@@ -200,7 +206,10 @@ class _AssetsScreenState extends State<AssetsScreen> {
                           activeColor: kOrange,
                         ),
                 ]),
+                const SizedBox(width: 4),
+                const Icon(Icons.chevron_right, color: Colors.white24, size: 20),
               ]),
+              ),
             );
           }),
       ]),
