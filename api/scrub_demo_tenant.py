@@ -11,6 +11,13 @@ that, and nothing the demo seed created:
     relationship attached to them and their device-profile snapshots
   - a connector-created "Unpatched Vulnerability Risk" left with no assets
   - saved connector credentials for the tenant (ConnectorConfig nodes)
+  - links from a connector-reported vulnerability (source other than the
+    NVD/CISA KEV catalog) to any of the tenant's seeded assets
+
+Before deleting it also reports which seeded assets share CVEs with the
+connector-created ones, and where those CVEs came from. Shared CVEs from
+the NVD/CISA KEV catalog are expected -- every asset is matched against the
+same public catalog by vendor/product -- and are not device data.
 
 Shared data (Vulnerability, Framework, Technique nodes) is never touched,
 and nor are the seeded assets, risks and controls.
@@ -38,6 +45,33 @@ FIND_CONFIGS = """
     MATCH (cc:ConnectorConfig {tenant_id: $tenant_id})
     RETURN cc.connector_id AS connector_id
 """
+# Seeded assets sharing CVEs with connector-created ones, and each shared
+# CVE's source -- to tell catalog matches from connector-reported findings.
+FIND_SHARED_CVES = """
+    MATCH (c:Asset {tenant_id: $tenant_id})<-[:EXPOSES]-(v:Vulnerability)-[:EXPOSES]->(a:Asset {tenant_id: $tenant_id})
+    WHERE c.owner ENDS WITH ' connector' AND NOT coalesce(a.owner, '') ENDS WITH ' connector'
+    RETURN a.name AS asset, count(DISTINCT v) AS shared,
+           collect(DISTINCT coalesce(v.source, 'unknown')) AS sources,
+           collect(DISTINCT v.id)[..5] AS examples
+    ORDER BY shared DESC
+"""
+# Connector-reported vulnerabilities (not from the public catalog) linked to
+# a seeded asset -- these would be device findings, and are removed.
+FIND_CONNECTOR_VULN_LINKS = """
+    MATCH (v:Vulnerability)-[e:EXPOSES]->(a:Asset {tenant_id: $tenant_id})
+    WHERE NOT coalesce(a.owner, '') ENDS WITH ' connector'
+      AND v.source IS NOT NULL AND NOT v.source IN ['CISA_KEV', 'NVD']
+    RETURN a.name AS asset, count(e) AS links, collect(DISTINCT v.source) AS sources,
+           collect(DISTINCT v.id)[..5] AS examples
+"""
+DELETE_CONNECTOR_VULN_LINKS = """
+    MATCH (v:Vulnerability)-[e:EXPOSES]->(a:Asset {tenant_id: $tenant_id})
+    WHERE NOT coalesce(a.owner, '') ENDS WITH ' connector'
+      AND v.source IS NOT NULL AND NOT v.source IN ['CISA_KEV', 'NVD']
+    DELETE e
+    RETURN count(e) AS deleted
+"""
+
 DELETE_ASSETS = """
     MATCH (a:Asset {tenant_id: $tenant_id}) WHERE a.id IN $ids
     OPTIONAL MATCH (a)-[:HAS_PROFILE]->(p:AssetProfileSection)
@@ -65,8 +99,25 @@ def main():
     try:
         assets = run_query(FIND_CONNECTOR_ASSETS, {"tenant_id": TENANT_ID})
         configs = run_query(FIND_CONFIGS, {"tenant_id": TENANT_ID})
+        shared = run_query(FIND_SHARED_CVES, {"tenant_id": TENANT_ID})
+        connector_links = run_query(FIND_CONNECTOR_VULN_LINKS, {"tenant_id": TENANT_ID})
 
-        if not assets and not configs:
+        print("  Seeded assets sharing CVEs with connector-created ones (report only):")
+        for r in shared:
+            print(f"    - {r['asset']}: {r['shared']} shared CVEs, sources {r['sources']}, e.g. {', '.join(r['examples'])}")
+        if not shared:
+            print("    (none)")
+        print("    NVD / CISA_KEV sources = public catalog matched on the asset's vendor/product,")
+        print("    not data from a device. Any other source is a connector finding (removed below).")
+        print()
+        print("  Connector-reported vulnerabilities linked to seeded assets (links deleted):")
+        for r in connector_links:
+            print(f"    - {r['asset']}: {r['links']} links, sources {r['sources']}, e.g. {', '.join(r['examples'])}")
+        if not connector_links:
+            print("    (none)")
+        print()
+
+        if not assets and not configs and not connector_links:
             print("  Nothing to remove -- no connector-created assets or saved credentials.")
             return
         print("  Connector-created assets (deleted with their links and profiles):")
@@ -91,7 +142,10 @@ def main():
         deleted_assets = run_write(DELETE_ASSETS, {"tenant_id": TENANT_ID, "ids": [a["id"] for a in assets]})
         deleted_risk = run_write(DELETE_ORPHAN_UNPATCHED_RISK, {"tenant_id": TENANT_ID})
         deleted_cfg = run_write(DELETE_CONFIGS, {"tenant_id": TENANT_ID})
+        deleted_links = run_write(DELETE_CONNECTOR_VULN_LINKS, {"tenant_id": TENANT_ID})
         print()
+        print(f"  Deleted {deleted_links[0]['deleted'] if deleted_links else 0} connector-reported "
+              f"vulnerability link(s) on seeded assets.")
         print(f"  Deleted {deleted_assets[0]['deleted'] if deleted_assets else 0} asset(s), "
               f"{deleted_risk[0]['deleted'] if deleted_risk else 0} orphaned risk(s), "
               f"{deleted_cfg[0]['deleted'] if deleted_cfg else 0} saved credential set(s).")
