@@ -322,7 +322,7 @@ def test_profile_endpoint_merges_and_orders_fix_first_by_ransomware(client, fake
     assert body["vulnerabilities"]["total"] == 3
     # Capabilities say which connectors could fill each section.
     assert "Wazuh" in body["capabilities"]["hardware"]
-    assert body["capabilities"]["protection"] == []
+    assert "Wazuh" not in body["capabilities"]["protection"]
 
 
 def test_profile_endpoint_hides_sensitive_fields_from_non_admins(client, fake_graph, as_user):

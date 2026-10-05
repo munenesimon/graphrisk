@@ -17,13 +17,22 @@ SUPPORTED_CHECKS = [
     "okta_dormant_accounts",
     "okta_admin_accounts",
     "okta_password_policy",
+    "okta_device_assurance",
 ]
+
+# Okta device diskEncryptionType values that mean "not encrypted".
+_UNENCRYPTED = {None, "", "NONE"}
 
 
 class OktaAdapter(BaseConnector):
     CONNECTOR_ID   = "okta"
     CONNECTOR_NAME = "Okta"
     REQUIRED_CONFIG_KEYS = ["org_url", "api_token"]
+    # Device profile (see connectors/profile.py), from Okta's device
+    # inventory (Identity Engine orgs, okta.devices.read scope): model,
+    # serial, OS, assigned user and whether it's managed. Disk encryption
+    # and secure-hardware state appear under "Other details".
+    PROFILE_SECTIONS = ("identity", "health", "os", "ownership")
 
     def authenticate(self) -> None:
         """
@@ -69,6 +78,7 @@ class OktaAdapter(BaseConnector):
             "okta_dormant_accounts": self._check_dormant_accounts,
             "okta_admin_accounts":   self._check_admin_accounts,
             "okta_password_policy":  self._check_password_policy,
+            "okta_device_assurance": self._check_device_assurance,
         }
         if check_id not in dispatch:
             raise ValueError(f"Unknown check for OktaAdapter: {check_id}")
@@ -181,4 +191,73 @@ class OktaAdapter(BaseConnector):
                 else "No active password policy enforces 12+ character minimum"
             ),
             control_title="Password Policy Enforcement",
+        )
+
+    def _check_device_assurance(self) -> CheckResult:
+        """
+        Of the active devices registered with Okta Verify, how many report
+        full-disk encryption -- an unencrypted laptop that's lost or stolen
+        is a data breach. Also discovers every device as an asset with its
+        profile.
+        """
+        devices = self._okta_get("/api/v1/devices", params={"expand": "user", "limit": 200})
+        active = [d for d in devices if d.get("status") == "ACTIVE"]
+        unencrypted = sum(1 for d in active
+                          if (d.get("profile") or {}).get("diskEncryptionType") in _UNENCRYPTED)
+        total = len(active)
+        score = round(1.0 - unencrypted / total, 4) if total else 1.0
+
+        discovered = []
+        for d in devices:
+            prof = d.get("profile") or {}
+            users = ((d.get("_embedded") or {}).get("users")) or []
+            first_user = users[0] if users else {}
+            login = ((first_user.get("user") or {}).get("profile") or {}).get("login")
+            platform = prof.get("platform") or ""
+            windows = platform.upper() == "WINDOWS"
+            discovered.append({
+                "name": prof.get("displayName") or f"Okta device {d.get('id')}",
+                "asset_type": "Endpoint",
+                "vendor": "Microsoft" if windows else None,
+                "product": "Windows" if windows else None,
+                "profile": {
+                    "identity": {
+                        "hostname": prof.get("displayName"),
+                        "manufacturer": prof.get("manufacturer"),
+                        "model": prof.get("model"),
+                        "serial_number": prof.get("serialNumber"),
+                        "agent_id": d.get("id"),
+                    },
+                    "health": {"status": (d.get("status") or "").lower() or None, "enrolled_at": d.get("created")},
+                    "os": {"platform": platform or None, "version": prof.get("osVersion")},
+                    "ownership": {
+                        "assigned_user": login,
+                        "managed": (first_user.get("managementStatus") == "MANAGED") if first_user else None,
+                    },
+                    # Not part of the shared schema -- kept as "Other details".
+                    "device_security": {
+                        "disk_encryption": prof.get("diskEncryptionType"),
+                        "secure_hardware": prof.get("secureHardwarePresent"),
+                    },
+                },
+            })
+
+        return CheckResult(
+            discovered_assets=discovered,
+            check_id="okta_device_assurance",
+            check_name="Okta Device Disk Encryption",
+            category=CheckCategory.ENDPOINT,
+            source=self.CONNECTOR_ID,
+            tenant_id=self.tenant_id,
+            status=(
+                CheckStatus.PASS if unencrypted == 0 else
+                CheckStatus.WARNING if unencrypted <= 3 else
+                CheckStatus.FAIL
+            ),
+            score=score,
+            affected_count=unencrypted,
+            total_count=total,
+            detail=f"{unencrypted} of {total} active devices do not report disk encryption",
+            control_title=self.config.get("control_titles", {}).get(
+                "okta_device_assurance", "Secure Configuration Baseline"),
         )

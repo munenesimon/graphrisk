@@ -59,6 +59,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from ..base import BaseConnector, _assert_safe_url
 from ..models import CheckResult, CheckStatus, CheckCategory
+from ..profile import group_vulnerable_packages
 
 logger = logging.getLogger(__name__)
 
@@ -370,29 +371,6 @@ class WazuhAdapter(BaseConnector):
 
         return prof if succeeded else None
 
-    @staticmethod
-    def _vulnerable_packages(vulns: list[dict]) -> list[dict]:
-        """Group this device's findings by the software they're in."""
-        rank = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
-        groups: dict[tuple, dict] = {}
-        for v in vulns:
-            pkg = v.get("package") or {}
-            if not pkg.get("name"):
-                continue
-            g = groups.setdefault((pkg["name"], pkg.get("version")), {
-                "name": pkg["name"], "version": pkg.get("version"),
-                "cve_ids": [], "max_severity": None,
-            })
-            if v["cve_id"] not in g["cve_ids"]:
-                g["cve_ids"].append(v["cve_id"])
-            if rank.get(v.get("severity"), 0) > rank.get(g["max_severity"], 0):
-                g["max_severity"] = v.get("severity")
-        out = list(groups.values())
-        for g in out:
-            g["cve_count"] = len(g["cve_ids"])
-        out.sort(key=lambda g: (-rank.get(g["max_severity"], 0), -g["cve_count"]))
-        return out
-
     def _agent_profile(self, agent: dict, vulns: list[dict], severity_counts: dict | None,
                        inventory: dict | None) -> dict:
         """One agent, mapped onto the universal device profile."""
@@ -428,7 +406,7 @@ class WazuhAdapter(BaseConnector):
         }
         for section, fields in (inventory or {}).items():
             profile.setdefault(section, {}).update({k: v for k, v in fields.items() if v is not None})
-        packages = self._vulnerable_packages(vulns)
+        packages = group_vulnerable_packages(vulns)
         if packages:
             profile.setdefault("software", {})["vulnerable_packages"] = packages
         if severity_counts:

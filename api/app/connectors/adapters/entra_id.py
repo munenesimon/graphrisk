@@ -16,13 +16,21 @@ SUPPORTED_CHECKS = [
     "privileged_mfa",
     "conditional_access",
     "guest_account_audit",
+    "entra_device_compliance",
 ]
+
+# Entra's trustType values, in plain words.
+_TRUST_TYPES = {"AzureAd": "Entra joined", "ServerAd": "Hybrid joined", "Workplace": "Registered (personal)"}
 
 
 class EntraIDAdapter(BaseConnector):
     CONNECTOR_ID   = "entra_id"
     CONNECTOR_NAME = "Microsoft Entra ID"
     REQUIRED_CONFIG_KEYS = ["azure_tenant_id", "client_id", "client_secret"]
+    # Device profile (see connectors/profile.py), from Entra's device
+    # directory: join type, OS, last sign-in, managed/compliant state.
+    # Needs the Device.Read.All application permission.
+    PROFILE_SECTIONS = ("identity", "health", "os", "ownership")
 
     def authenticate(self) -> None:
         """OAuth 2.0 client credentials via the Microsoft identity platform."""
@@ -46,6 +54,7 @@ class EntraIDAdapter(BaseConnector):
             "privileged_mfa":      self._check_privileged_mfa,
             "conditional_access":  self._check_conditional_access,
             "guest_account_audit": self._check_guest_accounts,
+            "entra_device_compliance": self._check_device_compliance,
         }
         if check_id not in dispatch:
             raise ValueError(f"Unknown check for EntraIDAdapter: {check_id}")
@@ -197,4 +206,69 @@ class EntraIDAdapter(BaseConnector):
             total_count=count,
             detail=f"{count} guest accounts found — review for excessive permissions",
             control_title="Guest and External Account Management",
+        )
+
+    def _check_device_compliance(self) -> CheckResult:
+        """
+        Of the enabled devices in the directory, how many are marked
+        compliant (by Intune or another MDM) -- a non-compliant or unmanaged
+        device signing in is a gap Conditional Access alone may not close.
+        Also discovers every device as an asset with its profile.
+        """
+        devices = list(self._paginate(
+            f"{GRAPH_BASE}/devices",
+            params={"$select": "id,deviceId,displayName,operatingSystem,operatingSystemVersion,"
+                               "isCompliant,isManaged,approximateLastSignInDateTime,"
+                               "registrationDateTime,trustType,manufacturer,model,accountEnabled"},
+        ))
+        enabled = [d for d in devices if d.get("accountEnabled", True)]
+        non_compliant = sum(1 for d in enabled if not d.get("isCompliant"))
+        total = len(enabled)
+        score = round(1.0 - non_compliant / total, 4) if total else 1.0
+
+        discovered = []
+        for d in devices:
+            os_name = d.get("operatingSystem") or ""
+            windows = os_name.lower().startswith("windows")
+            discovered.append({
+                "name": d.get("displayName") or f"Entra device {d.get('deviceId') or d.get('id')}",
+                "asset_type": "Endpoint",
+                "vendor": "Microsoft" if windows else None,
+                "product": "Windows" if windows else None,
+                "profile": {
+                    "identity": {
+                        "hostname": d.get("displayName"),
+                        "device_type": _TRUST_TYPES.get(d.get("trustType"), d.get("trustType")),
+                        "manufacturer": d.get("manufacturer"),
+                        "model": d.get("model"),
+                        "agent_id": d.get("deviceId"),
+                    },
+                    "health": {
+                        "status": "enabled" if d.get("accountEnabled", True) else "disabled",
+                        "last_seen": d.get("approximateLastSignInDateTime"),
+                        "enrolled_at": d.get("registrationDateTime"),
+                    },
+                    "os": {"name": os_name or None, "version": d.get("operatingSystemVersion")},
+                    "ownership": {"managed": d.get("isManaged"), "compliant": d.get("isCompliant")},
+                },
+            })
+
+        return CheckResult(
+            discovered_assets=discovered,
+            check_id="entra_device_compliance",
+            check_name="Entra ID Device Compliance",
+            category=CheckCategory.ENDPOINT,
+            source=self.CONNECTOR_ID,
+            tenant_id=self.tenant_id,
+            status=(
+                CheckStatus.PASS if score >= 0.95 else
+                CheckStatus.WARNING if score >= 0.80 else
+                CheckStatus.FAIL
+            ),
+            score=score,
+            affected_count=non_compliant,
+            total_count=total,
+            detail=f"{non_compliant} of {total} enabled devices are not marked compliant",
+            control_title=self.config.get("control_titles", {}).get(
+                "entra_device_compliance", "Secure Configuration Baseline"),
         )

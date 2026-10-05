@@ -37,7 +37,7 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "hardware": ("cpu", "cpu_cores", "memory_total_mb", "memory_used_percent"),
     "network": ("ip_addresses", "mac_addresses", "public_ip", "listening_ports"),
     "software": ("installed_count", "vulnerable_packages", "hotfixes_count", "recent_hotfixes"),
-    "vulnerabilities": ("counts_by_severity", "total", "scanner"),
+    "vulnerabilities": ("counts_by_severity", "total", "scanner", "last_scanned"),
     "configuration": ("benchmarks",),
     "protection": ("status", "product", "policy", "last_detection", "detections_count"),
     "ownership": ("assigned_user", "owner_email", "department", "managed", "compliant"),
@@ -183,3 +183,41 @@ def mask_sensitive(merged: dict[str, dict]) -> list[str]:
             if not sec["fields"]:
                 del merged[section]
     return hidden
+
+
+_SEVERITY_RANK = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+
+
+def severity_label(value) -> str | None:
+    """Normalise a vendor's severity ("CRITICAL", "high", ...) to the
+    profile's Critical/High/Medium/Low; None if it isn't one of those."""
+    v = str(value or "").strip().capitalize()
+    return v if v in _SEVERITY_RANK else None
+
+
+def group_vulnerable_packages(findings: list[dict]) -> list[dict]:
+    """
+    Group per-device findings by the software they're in -- the shape of
+    software.vulnerable_packages. Each finding is a dict with "cve_id",
+    optional "severity" and optional "package": {"name", "version"};
+    findings without a package name are skipped. Shared by every adapter
+    so "what do I patch" looks the same whichever scanner found it.
+    """
+    groups: dict[tuple, dict] = {}
+    for f in findings:
+        pkg = f.get("package") or {}
+        if not pkg.get("name") or not f.get("cve_id"):
+            continue
+        g = groups.setdefault((pkg["name"], pkg.get("version")), {
+            "name": pkg["name"], "version": pkg.get("version"),
+            "cve_ids": [], "max_severity": None,
+        })
+        if f["cve_id"] not in g["cve_ids"]:
+            g["cve_ids"].append(f["cve_id"])
+        if _SEVERITY_RANK.get(f.get("severity"), 0) > _SEVERITY_RANK.get(g["max_severity"], 0):
+            g["max_severity"] = f.get("severity")
+    out = list(groups.values())
+    for g in out:
+        g["cve_count"] = len(g["cve_ids"])
+    out.sort(key=lambda g: (-_SEVERITY_RANK.get(g["max_severity"], 0), -g["cve_count"]))
+    return out

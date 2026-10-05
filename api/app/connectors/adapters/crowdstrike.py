@@ -40,6 +40,7 @@ from datetime import datetime, timedelta, timezone
 
 from ..base import BaseConnector
 from ..models import CheckResult, CheckStatus, CheckCategory
+from ..profile import group_vulnerable_packages, severity_label
 
 SUPPORTED_CHECKS = [
     "crowdstrike_stale_sensors",
@@ -64,11 +65,24 @@ DEFAULT_BASE_URL = "https://api.crowdstrike.com"
 # spirit as Wazuh's MAX_AGENTS_PER_SCA_SWEEP cap.
 PAGE_LIMIT = 500
 
+# A host that checked in within this long is shown as "online" on the asset
+# page -- Falcon's host record has a last_seen timestamp, not a live status.
+ONLINE_WITHIN = timedelta(hours=24)
+
+# Findings at these severities become Vulnerability nodes / risks, same
+# cutoff as Wazuh's default; every severity still counts toward the
+# device profile's totals.
+INGESTED_SEVERITIES = {"Critical", "High"}
+
 
 class CrowdStrikeAdapter(BaseConnector):
     CONNECTOR_ID   = "crowdstrike"
     CONNECTOR_NAME = "CrowdStrike Falcon"
     REQUIRED_CONFIG_KEYS = ["client_id", "client_secret"]
+    # Device profile (see connectors/profile.py): host details from the
+    # devices endpoint, open detections per host, Spotlight findings per host.
+    PROFILE_SECTIONS = ("identity", "health", "os", "network", "protection",
+                        "ownership", "cloud", "software", "vulnerabilities", "activity")
 
     def authenticate(self) -> None:
         base_url = self.config.get("base_url", DEFAULT_BASE_URL).rstrip("/")
@@ -109,6 +123,85 @@ class CrowdStrikeAdapter(BaseConnector):
         data = self._get(f"{base_url}/devices/combined/devices/light/v1", params={"limit": PAGE_LIMIT})
         return data.get("resources", [])
 
+    # ── Device profile ───────────────────────────────────────────────────────
+    @staticmethod
+    def _host_name(h: dict) -> str:
+        return h.get("hostname") or f"Falcon host {h.get('device_id')}"
+
+    @staticmethod
+    def _parse_time(value):
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+
+    def _host_to_asset(self, h: dict) -> dict:
+        """One Falcon host, as a discovered asset with its device profile."""
+        seen_at = self._parse_time(h.get("last_seen"))
+        online = seen_at is not None and datetime.now(timezone.utc) - seen_at <= ONLINE_WITHIN
+        platform = h.get("platform_name") or ""
+        policies = h.get("device_policies") or {}
+        prevention = policies.get("prevention") or {}
+        if h.get("reduced_functionality_mode") == "yes":
+            protection_status = "Reduced functionality mode"
+        elif h.get("status") == "contained":
+            protection_status = "Contained (network isolated)"
+        else:
+            protection_status = "Active"
+        mac = (h.get("mac_address") or "").replace("-", ":").lower() or None
+        return {
+            "name": self._host_name(h),
+            "asset_type": "Server" if h.get("product_type_desc") == "Server" else "Endpoint",
+            "criticality": "Medium",
+            "environment": "Production",
+            "vendor": "Microsoft" if platform.lower() == "windows" else None,
+            "product": "Windows" if platform.lower() == "windows" else None,
+            "profile": {
+                "identity": {
+                    "hostname": h.get("hostname"),
+                    "device_type": h.get("product_type_desc"),
+                    "manufacturer": h.get("system_manufacturer"),
+                    "model": h.get("system_product_name"),
+                    "serial_number": h.get("serial_number"),
+                    "agent_id": h.get("device_id"),
+                    "cloud_instance_id": h.get("instance_id"),
+                    "groups": h.get("tags"),
+                },
+                "health": {
+                    "status": "online" if online else "offline",
+                    "last_seen": h.get("last_seen"),
+                    "enrolled_at": h.get("first_seen"),
+                    "agent_version": h.get("agent_version"),
+                },
+                "os": {
+                    "name": h.get("os_product_name") or platform or None,
+                    "version": h.get("os_version"),
+                    "platform": platform or None,
+                    "kernel": h.get("kernel_version"),
+                    "build": h.get("os_build"),
+                },
+                "network": {
+                    "ip_addresses": [h["local_ip"]] if h.get("local_ip") else None,
+                    "public_ip": h.get("external_ip"),
+                    "mac_addresses": [mac] if mac else None,
+                },
+                "protection": {
+                    "status": protection_status,
+                    "product": "CrowdStrike Falcon",
+                    "policy": (
+                        None if "applied" not in prevention else
+                        ("Prevention policy applied" if prevention.get("applied") else "Prevention policy not applied")
+                    ),
+                },
+                "ownership": {"assigned_user": h.get("last_login_user")},
+                "cloud": {
+                    "provider": h.get("service_provider"),
+                    "account": h.get("service_provider_account_id"),
+                    "region": h.get("zone_group"),
+                },
+            },
+        }
+
     # ── Individual checks ────────────────────────────────────────────────────
     def _check_stale_sensors(self, threshold_days: int = 7) -> CheckResult:
         """
@@ -135,6 +228,8 @@ class CrowdStrikeAdapter(BaseConnector):
         score = round(1.0 - (stale / total), 4) if total > 0 else 1.0
 
         return CheckResult(
+            # Every Falcon-managed host becomes an asset, with its profile.
+            discovered_assets=[self._host_to_asset(h) for h in hosts],
             check_id="crowdstrike_stale_sensors",
             check_name="CrowdStrike Sensor Connectivity",
             category=CheckCategory.ENDPOINT,
@@ -191,16 +286,36 @@ class CrowdStrikeAdapter(BaseConnector):
         ids = ids_data.get("resources", [])
         total = len(ids)
         high_severity = 0
+        per_host: dict[str, dict] = {}
         if ids:
             summaries = self._post(
                 f"{base_url}/detects/entities/summaries/GET/v1", json_body={"ids": ids}
             )
             for d in summaries.get("resources", []):
-                if d.get("max_severity_displayname") in ("High", "Critical"):
+                severity = d.get("max_severity_displayname")
+                if severity in ("High", "Critical"):
                     high_severity += 1
+                # Open detections per host, for that device's Activity section.
+                device = d.get("device") or {}
+                host = device.get("hostname") or (f"Falcon host {device['device_id']}" if device.get("device_id") else None)
+                if not host:
+                    continue
+                entry = per_host.setdefault(host, {"levels": {}, "recent": []})
+                label = severity or "Unknown"
+                entry["levels"][label] = entry["levels"].get(label, 0) + 1
+                behaviors = d.get("behaviors") or []
+                what = (behaviors[0].get("display_name") or behaviors[0].get("scenario")) if behaviors else None
+                entry["recent"].append(f"{label}: {what or d.get('detection_id', 'detection')}")
+        activity = [
+            {"name": host, "profile_only": True, "profile": {"activity": {
+                "alerts_by_level": e["levels"], "recent_alerts": e["recent"], "window": "Open detections",
+            }}}
+            for host, e in per_host.items()
+        ]
         score = round(1.0 - (high_severity / total), 4) if total > 0 else 1.0
 
         return CheckResult(
+            discovered_assets=activity,
             check_id="crowdstrike_high_severity_detections",
             check_name="CrowdStrike High-Severity Open Detections",
             category=CheckCategory.ENDPOINT,
@@ -227,14 +342,17 @@ class CrowdStrikeAdapter(BaseConnector):
         base_url = self.config.get("base_url", DEFAULT_BASE_URL).rstrip("/")
         data = self._get(
             f"{base_url}/spotlight/combined/vulnerabilities/v1",
-            params={"filter": "status:'open'", "limit": PAGE_LIMIT, "facet": "cve"},
+            # host_info: which device each finding is on, for the asset page.
+            params={"filter": "status:'open'", "limit": PAGE_LIMIT, "facet": ["cve", "host_info"]},
         )
         vulns = data.get("resources", [])
         total = len(vulns)
         critical = sum(1 for v in vulns if (v.get("cve") or {}).get("severity") == "CRITICAL")
+        discovered_assets = self._spotlight_assets(vulns)
         score = round(1.0 - (critical / total), 4) if total > 0 else 1.0
 
         return CheckResult(
+            discovered_assets=discovered_assets,
             check_id="crowdstrike_critical_vulnerabilities",
             check_name="CrowdStrike Spotlight Critical Vulnerabilities",
             category=CheckCategory.PATCH_MGMT,
@@ -251,3 +369,54 @@ class CrowdStrikeAdapter(BaseConnector):
             detail=f"{critical} of {total} open Spotlight findings are CRITICAL severity",
             control_title=self._control_title("crowdstrike_critical_vulnerabilities"),
         )
+
+    def _spotlight_assets(self, vulns: list[dict]) -> list[dict]:
+        """
+        Spotlight findings grouped per host: Critical/High ones as real
+        per-device vulnerabilities (same dict shape Wazuh uses, so they get
+        Vulnerability nodes, risks and root cause the same way), and every
+        severity counted for the device profile, with the affected app as
+        the package to patch.
+        """
+        by_host: dict[str, dict] = {}
+        for v in vulns:
+            host = (v.get("host_info") or {}).get("hostname")
+            cve = v.get("cve") or {}
+            if not host or not cve.get("id"):
+                continue
+            severity = severity_label(cve.get("severity"))
+            apps = v.get("apps") or []
+            app = apps[0].get("product_name_version") if apps else None
+            entry = by_host.setdefault(host, {"findings": [], "counts": {}})
+            label = severity or "Unknown"
+            entry["counts"][label] = entry["counts"].get(label, 0) + 1
+            finding = {
+                "cve_id": cve["id"],
+                "severity": severity or "Unknown",
+                "cvss_score": cve.get("base_score", 0.0),
+                "description": (cve.get("description") or "")[:600],
+                "published_at": cve.get("published_date", ""),
+                "source": "CrowdStrike Spotlight",
+            }
+            if app:
+                finding["package"] = {"name": app, "version": None}
+            entry["findings"].append(finding)
+        out = []
+        for host, e in by_host.items():
+            asset = {
+                "name": host,
+                "asset_type": "Endpoint",
+                "profile": {
+                    "vulnerabilities": {
+                        "counts_by_severity": e["counts"],
+                        "total": sum(e["counts"].values()),
+                        "scanner": "CrowdStrike Spotlight",
+                    },
+                    "software": {"vulnerable_packages": group_vulnerable_packages(e["findings"])},
+                },
+            }
+            ingested = [f for f in e["findings"] if f["severity"] in INGESTED_SEVERITIES]
+            if ingested:
+                asset["vulnerabilities"] = ingested
+            out.append(asset)
+        return out

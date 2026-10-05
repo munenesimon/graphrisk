@@ -68,11 +68,17 @@ DEFAULT_BASE_URL = "https://qualysapi.qualys.com"
 # than guessed at, same spirit as Wazuh's MAX_AGENTS_PER_SCA_SWEEP cap.
 TRUNCATION_LIMIT = 1000
 
+# Qualys's 1-5 severity scale, in the device profile's terms.
+_SEVERITY_LABELS = {"5": "Critical", "4": "High", "3": "Medium", "2": "Low", "1": "Low"}
+
 
 class QualysAdapter(BaseConnector):
     CONNECTOR_ID   = "qualys"
     CONNECTOR_NAME = "Qualys VM"
     REQUIRED_CONFIG_KEYS = ["username", "password"]
+    # Device profile (see connectors/profile.py): host identity/OS/IP from
+    # the Host List API, confirmed Severity 4-5 counts from Host Detection.
+    PROFILE_SECTIONS = ("identity", "os", "network", "vulnerabilities")
 
     def authenticate(self) -> None:
         # No token to fetch -- Basic Auth is re-sent on every request in
@@ -105,6 +111,35 @@ class QualysAdapter(BaseConnector):
         if check_id not in dispatch:
             raise ValueError(f"Unknown check for QualysAdapter: {check_id}")
         return dispatch[check_id]()
+
+    # ── Device profile ───────────────────────────────────────────────────────
+    @staticmethod
+    def _text(host: ET.Element, tag: str):
+        el = host.find(tag)
+        return el.text.strip() if el is not None and el.text and el.text.strip() else None
+
+    def _host_name(self, h: ET.Element) -> str:
+        return (self._text(h, "DNS") or self._text(h, "NETBIOS") or self._text(h, "IP")
+                or f"Qualys host {self._text(h, 'ID')}")
+
+    def _host_to_asset(self, h: ET.Element) -> dict:
+        os_name = self._text(h, "OS")
+        windows = bool(os_name and "windows" in os_name.lower())
+        ip = self._text(h, "IP")
+        return {
+            "name": self._host_name(h),
+            "asset_type": "Endpoint",
+            "vendor": "Microsoft" if windows else None,
+            "product": "Windows" if windows else None,
+            "profile": {
+                "identity": {
+                    "hostname": self._text(h, "DNS") or self._text(h, "NETBIOS"),
+                    "agent_id": self._text(h, "ID"),
+                },
+                "os": {"name": os_name},
+                "network": {"ip_addresses": [ip] if ip else None},
+            },
+        }
 
     # ── Individual checks ────────────────────────────────────────────────────
     def _check_critical_vulnerabilities(self) -> CheckResult:
@@ -173,6 +208,8 @@ class QualysAdapter(BaseConnector):
         score = round(1.0 - (stale / total), 4) if total > 0 else 1.0
 
         return CheckResult(
+            # Every host in the subscription becomes an asset, with its profile.
+            discovered_assets=[self._host_to_asset(h) for h in hosts],
             check_id="qualys_stale_scans",
             check_name="Qualys Scan Freshness",
             category=CheckCategory.PATCH_MGMT,
@@ -230,7 +267,28 @@ class QualysAdapter(BaseConnector):
         )
         confirmed = len(root.findall(".//DETECTION"))
 
+        # Confirmed Severity 4-5 findings per host, for the device profile.
+        profiles = []
+        for h in root.findall(".//HOST"):
+            counts: dict[str, int] = {}
+            for d in h.findall(".//DETECTION"):
+                label = _SEVERITY_LABELS.get(self._text(d, "SEVERITY") or "", "Unknown")
+                counts[label] = counts.get(label, 0) + 1
+            if not counts:
+                continue
+            profiles.append({
+                "name": self._host_name(h),
+                "profile_only": True,
+                "profile": {"vulnerabilities": {
+                    "counts_by_severity": counts,
+                    "total": sum(counts.values()),
+                    "scanner": "Qualys VM (confirmed, severity 4-5)",
+                    "last_scanned": self._text(h, "LAST_SCAN_DATETIME"),
+                }},
+            })
+
         return CheckResult(
+            discovered_assets=profiles,
             check_id="qualys_confirmed_high_severity",
             check_name="Qualys Confirmed High-Severity Detections",
             category=CheckCategory.PATCH_MGMT,
