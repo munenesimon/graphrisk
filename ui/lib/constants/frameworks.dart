@@ -43,6 +43,33 @@ const Map<String, String> kFrameworkDescriptions = {
 
 String frameworkDisplayName(String slug) => kFrameworkDisplayNames[slug] ?? slug;
 
+/// Compact names for tight spots like graph chips, where the full display
+/// name wouldn't fit (the item's detail still shows the full name).
+const Map<String, String> kFrameworkShortNames = {
+  'NIST_800_53': 'NIST 800-53',
+  'NIST_CSF': 'NIST CSF',
+  'CIS_Controls': 'CIS v8.1',
+  'PCI_DSS': 'PCI DSS',
+  'KENYA_DPA': 'Kenya DPA',
+  'CBK_CYBER_BANKS': 'CBK Banks',
+  'CBK_CYBER_PSP': 'CBK PSPs',
+  'KENYA_CMCA_CII': 'CMCA CII',
+};
+
+String frameworkShortName(String slug) =>
+    kFrameworkShortNames[slug] ?? frameworkDisplayName(slug);
+
+/// "KENYA_DPA DPR-DETECTION" -> "Kenya DPA DPR-DETECTION": a crosswalk
+/// requirement string ("<framework name> <reference>") with a readable
+/// framework prefix.
+String readableRequirement(String raw, {bool short = true}) {
+  final i = raw.indexOf(' ');
+  if (i <= 0) return raw;
+  final slug = raw.substring(0, i);
+  final name = short ? frameworkShortName(slug) : frameworkDisplayName(slug);
+  return '$name ${raw.substring(i + 1)}';
+}
+
 String frameworkDescription(String slug) =>
     kFrameworkDescriptions[slug] ??
     'This framework has requirements linked to the affected control. '

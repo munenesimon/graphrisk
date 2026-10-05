@@ -191,9 +191,28 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph>
       _transform.value = target;
       return;
     }
+    _animateTo(target);
+  }
+
+  void _animateTo(Matrix4 target) {
     _zoomTween = Matrix4Tween(begin: _transform.value.clone(), end: target)
         .animate(CurvedAnimation(parent: _zoomAnim, curve: Curves.easeInOutCubic));
     _zoomAnim.forward(from: 0);
+  }
+
+  /// The +/- buttons: zoom about the middle of the view, animated, within
+  /// the same 0.25x-2.5x range as before.
+  void _zoomBy(double factor, Size viewport) {
+    final current = _transform.value.getMaxScaleOnAxis();
+    final targetScale = (current * factor).clamp(0.25, 2.5).toDouble();
+    final f = targetScale / current;
+    if ((f - 1).abs() < 1e-3) return;
+    final c = Offset(viewport.width / 2, viewport.height / 2);
+    final aboutCenter = Matrix4.identity()
+      ..translate(c.dx, c.dy)
+      ..scale(f)
+      ..translate(-c.dx, -c.dy);
+    _animateTo(aboutCenter.multiplied(_transform.value));
   }
 
   Matrix4 _matrixFor(Rect rect, Size viewport) {
@@ -332,7 +351,11 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph>
         // 800-53 Rev5" rather than the raw "NIST_800_53" slug).
         final label = isOverflow
             ? '+$overflow more (see List view)'
-            : (cat.label == 'Compliance Gaps' ? frameworkDisplayName(shown[ii]) : shown[ii]);
+            : cat.label == 'Compliance Gaps'
+                ? frameworkDisplayName(shown[ii])
+                : cat.label == 'Crosswalk Requirements'
+                    ? readableRequirement(shown[ii])
+                    : shown[ii];
         final itemIndex = ii;
         nodes.add(_PositionedNode(
           position: itemPos,
@@ -370,6 +393,10 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph>
           minScale: 0.25,
           maxScale: 2.5,
           boundaryMargin: const EdgeInsets.all(400),
+          // Mouse-wheel zoom is off: the graph sits inside a scrolling page,
+          // and a wheel over it used to zoom the graph instead of scrolling
+          // the page. Zoom with the +/- buttons or by tapping a category.
+          scaleEnabled: false,
           // A manual pan/zoom mid-animation wins over the animation.
           onInteractionStart: (_) => _zoomAnim.stop(),
           child: SizedBox(
@@ -407,21 +434,17 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph>
         ),
         Positioned(
           top: 8, right: 8,
-          child: Tooltip(
-            message: _expandedLabel == null ? 'Recenter the diagram' : 'Recenter on this category',
-            child: Material(
-              color: kSurface2.withOpacity(0.8),
-              borderRadius: BorderRadius.circular(8),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(8),
-                onTap: () => _fitToView(viewport, animate: true),
-                child: const Padding(
-                  padding: EdgeInsets.all(8),
-                  child: Icon(Icons.center_focus_strong, color: Colors.white70, size: 18),
-                ),
-              ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            _ViewButton(
+              icon: Icons.center_focus_strong,
+              tooltip: _expandedLabel == null ? 'Recenter the diagram' : 'Recenter on this category',
+              onTap: () => _fitToView(viewport, animate: true),
             ),
-          ),
+            const SizedBox(height: 6),
+            _ViewButton(icon: Icons.add, tooltip: 'Zoom in', onTap: () => _zoomBy(1.25, viewport)),
+            const SizedBox(height: 6),
+            _ViewButton(icon: Icons.remove, tooltip: 'Zoom out', onTap: () => _zoomBy(0.8, viewport)),
+          ]),
         ),
           Positioned(
             bottom: 8, left: 8,
@@ -584,7 +607,17 @@ class _CircleNode extends StatelessWidget {
         const SizedBox(height: 4),
         SizedBox(
           width: _kNodeBoxWidth,
-          child: Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: [
+          child: Center(
+            // Opaque backing so a spoke passing behind a label (e.g. the
+            // hub's, on the way to the bottom category) doesn't strike
+            // through the text.
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              decoration: BoxDecoration(
+                color: kBackground.withOpacity(0.85),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: [
             Flexible(
               child: Text(
                 node.label,
@@ -599,7 +632,9 @@ class _CircleNode extends StatelessWidget {
               ),
             ),
             if (chevron != null) Icon(chevron, color: node.color, size: 14),
-          ]),
+              ]),
+            ),
+          ),
         ),
       ])),
     );
@@ -633,6 +668,32 @@ class _LeafChip extends StatelessWidget {
             color: node.isOverflow ? Colors.white54 : Colors.white,
             fontSize: 10,
             fontStyle: node.isOverflow ? FontStyle.italic : FontStyle.normal,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ViewButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+  const _ViewButton({required this.icon, required this.tooltip, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: kSurface2.withOpacity(0.8),
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Icon(icon, color: Colors.white70, size: 18),
           ),
         ),
       ),

@@ -349,7 +349,7 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
           ),
           const SizedBox(height: 8),
           const Text(
-            'Drag to pan, pinch/scroll to zoom, tap a node for its full name. '
+            'Drag to pan, zoom with + / − or by tapping a category, tap a node for its full name. '
             'Only categories with results are shown; a category with more than '
             '10 items collapses the rest into a "+N more" node -- switch to List '
             'view for the complete set.',
@@ -1202,20 +1202,14 @@ class _RootCause extends StatelessWidget {
         const Text('ROOT CAUSE',
             style: TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
         const SizedBox(height: 6),
-        for (final d in drivers)
+        for (final d in drivers.where((d) => d.cves.isNotEmpty))
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(groupByAsset ? 'On ${d.asset}' : d.risk,
                   style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600)),
               const SizedBox(height: 4),
-              if (d.cves.isEmpty)
-                const Text(
-                  'No CVE recorded for this link -- it was linked manually, or before '
-                  'GraphRisk started recording root causes.',
-                  style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.4),
-                )
-              else ...[
+              ...[
                 for (final cve in d.cves) _DriverCveRow(cve: cve),
                 if (d.totalCves > d.cves.length)
                   Padding(
@@ -1225,6 +1219,15 @@ class _RootCause extends StatelessWidget {
                   ),
               ],
             ]),
+          ),
+        // Links with no scanner finding behind them (added by hand, or
+        // before root causes were recorded): one line, not one per link.
+        if (drivers.any((d) => d.cves.isEmpty))
+          Text(
+            'No scanner finding recorded for '
+            '${drivers.where((d) => d.cves.isEmpty).map((d) => groupByAsset ? d.asset : d.risk).join(', ')}'
+            ' — linked by hand or before root causes were recorded.',
+            style: const TextStyle(color: Colors.white38, fontSize: 11, height: 1.4),
           ),
       ]),
     );
