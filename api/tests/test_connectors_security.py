@@ -327,3 +327,54 @@ class TestErrorHandlerDoesNotLeakDetail:
         assert "ref:" in detail
         assert "ConnectionError" not in detail
         assert "attacker" not in detail.lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Saving merges over the existing saved config instead of replacing it.
+# Regression: saving only Wazuh's indexer fields (manager fields left blank,
+# since saved values are never shown back) wiped the manager credentials.
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestSaveMergesWithExistingConfig:
+    def _saved_blob(self, fake_graph):
+        from app.connectors.crypto import decrypt_config
+        params = fake_graph.write.call_args[0][1]
+        return decrypt_config(params["encrypted_config"]), params["config_keys"]
+
+    def test_saving_new_keys_keeps_previously_saved_ones(self, client, fake_graph, as_user, no_api_key):
+        as_user(role="owner")
+        fake_graph.query.return_value = [{"encrypted_config": encrypt_config(
+            {"api_url": "https://manager.example.com", "username": "wazuh-wui", "password": "api-pw"})}]
+        resp = client.put("/api/v1/connectors/wazuh/config", json={"config": {
+            "indexer_url": "https://indexer.example.com", "indexer_username": "admin", "indexer_password": "idx-pw"}})
+        assert resp.status_code == 200, resp.text
+        saved, keys = self._saved_blob(fake_graph)
+        assert saved == {
+            "api_url": "https://manager.example.com", "username": "wazuh-wui", "password": "api-pw",
+            "indexer_url": "https://indexer.example.com", "indexer_username": "admin", "indexer_password": "idx-pw",
+        }
+        assert keys == sorted(saved.keys())
+        assert resp.json()["config_keys"] == keys
+
+    def test_resaving_a_key_replaces_only_that_key(self, client, fake_graph, as_user, no_api_key):
+        as_user(role="owner")
+        fake_graph.query.return_value = [{"encrypted_config": encrypt_config(
+            {"api_url": "https://old.example.com", "username": "wazuh-wui", "password": "api-pw"})}]
+        resp = client.put("/api/v1/connectors/wazuh/config", json={"config": {"api_url": "https://new.example.com"}})
+        assert resp.status_code == 200, resp.text
+        saved, _ = self._saved_blob(fake_graph)
+        assert saved == {"api_url": "https://new.example.com", "username": "wazuh-wui", "password": "api-pw"}
+
+    def test_blank_values_never_overwrite_saved_ones(self, client, fake_graph, as_user, no_api_key):
+        as_user(role="owner")
+        fake_graph.query.return_value = [{"encrypted_config": encrypt_config({"username": "wazuh-wui", "password": "api-pw"})}]
+        resp = client.put("/api/v1/connectors/wazuh/config", json={"config": {"username": "", "password": "new-pw"}})
+        assert resp.status_code == 200, resp.text
+        saved, _ = self._saved_blob(fake_graph)
+        assert saved == {"username": "wazuh-wui", "password": "new-pw"}
+
+    def test_all_blank_save_is_rejected(self, client, fake_graph, as_user, no_api_key):
+        as_user(role="owner")
+        resp = client.put("/api/v1/connectors/wazuh/config", json={"config": {"username": ""}})
+        assert resp.status_code == 400
+        fake_graph.write.assert_not_called()

@@ -232,7 +232,8 @@ class _ConnectorsScreenState extends State<ConnectorsScreen> {
               child: Text(
                 "Run tests a connector without saving anything. Save encrypts credentials and "
                 "stores them for this connector so future runs don't need them re-entered -- "
-                "saved values are never shown back here, only which fields are set.",
+                "saved values are never shown back here, only which fields are set. Saving only "
+                "updates the fields you fill in; Clear saved removes them all.",
                 style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4),
               ),
             ),

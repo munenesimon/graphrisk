@@ -210,11 +210,18 @@ async def save_connector_config(
     user: CurrentUser = Depends(get_current_user),
 ):
     """
-    Encrypt and save config for this tenant + connector, replacing any
-    config saved for that pair before. Subsequent runs of this connector
-    (run-check / run-connector) use it automatically unless overridden
-    per-request. The plaintext values are never written anywhere except
-    inside the encrypted blob -- see crypto.py.
+    Encrypt and save config for this tenant + connector, MERGED over what's
+    already saved: keys in the request (non-empty values) replace their
+    saved counterparts, and every other saved key is kept. This used to
+    replace the whole saved config, so saving just the new fields -- e.g.
+    adding Wazuh's optional indexer credentials to an already-working
+    manager config, with the manager fields left blank because the UI
+    never shows saved values back -- silently wiped the manager
+    credentials. To remove saved values, use DELETE (clears all of them).
+    Subsequent runs of this connector (run-check / run-connector) use the
+    saved config automatically unless overridden per-request. The
+    plaintext values are never written anywhere except inside the
+    encrypted blob -- see crypto.py.
     """
     if user.role not in CONFIG_EDITORS:
         raise HTTPException(status_code=403, detail="Only an organisation owner or admin can save connector credentials")
@@ -223,11 +230,15 @@ async def save_connector_config(
     if not body.config:
         raise HTTPException(status_code=400, detail="config must not be empty -- use DELETE to clear a saved config")
 
-    config_keys = sorted(body.config.keys())
+    updates = {k: v for k, v in body.config.items() if v not in (None, "")}
+    if not updates:
+        raise HTTPException(status_code=400, detail="config must not be empty -- use DELETE to clear a saved config")
+    merged = {**_load_stored_config(user.graph_tenant_id, connector_id), **updates}
+    config_keys = sorted(merged.keys())
     run_write(SET_CONNECTOR_CONFIG, {
         "tenant_id": user.graph_tenant_id,
         "connector_id": connector_id,
-        "encrypted_config": encrypt_config(body.config),
+        "encrypted_config": encrypt_config(merged),
         "config_keys": config_keys,
     })
     return {"connector_id": connector_id, "config_keys": config_keys}
