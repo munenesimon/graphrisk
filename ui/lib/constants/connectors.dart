@@ -40,8 +40,8 @@ class ConnectorSpec {
   final List<ConnectorField> fields;
   // Matches the README connector table's "Validation" column: false means
   // this adapter has only been offline/structurally verified, not run
-  // against a live vendor instance yet (e.g. Wazuh, pending a self-hosted
-  // instance). Purely informational -- doesn't gate whether it can be run.
+  // against a live vendor instance yet (e.g. CrowdStrike, pending a real
+  // tenant). Purely informational -- doesn't gate whether it can be run.
   final bool liveVerified;
   // Heading + one-line explainer shown above any `advanced: true` fields,
   // which the screen renders collapsed by default. Generic defaults so a
@@ -116,7 +116,9 @@ const List<ConnectorSpec> kConnectorSpecs = [
       ConnectorField('indexer_username', 'Indexer username', advanced: true),
       ConnectorField('indexer_password', 'Indexer password', secret: true, advanced: true),
     ],
-    liveVerified: false,
+    // Live-verified against a self-hosted Wazuh manager (agent connectivity
+    // + SCA). The optional indexer-backed CVE detection is still only
+    // offline-verified -- see the README's connector table.
     advancedLabel: 'Vulnerability detection (optional)',
     advancedDescription: 'Pulls real per-device CVE findings from the Wazuh indexer, a separate '
         "service from the manager above. Leave blank to skip -- agents still become Assets either way, "
