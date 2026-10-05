@@ -10,10 +10,20 @@ MERGE_VULN = """
     UNWIND $batch AS row
     MERGE (v:Vulnerability {id: row.cve_id})
     ON CREATE SET v.first_seen_at = coalesce(row.date_added, row.published_at, row.published_date, toString(datetime()))
-    SET v.cve_id=row.cve_id, v.title=row.title, v.description=row.description,
+    SET v.cve_id=row.cve_id, v.description=row.description,
+        // NVD rows use the bare CVE id as a title; keep KEV's real name.
+        v.title = CASE WHEN row.source = "NVD" AND coalesce(v.title, "") <> ""
+                       THEN v.title ELSE row.title END,
         v.vendor=row.vendor, v.product=row.product, v.cpe_pairs=row.cpe_pairs,
-        v.cvss_score=row.cvss_score,
-        v.severity=row.severity, v.ransomware_use=row.ransomware,
+        // CISA KEV rows carry no CVSS/severity of their own (placeholder 0.0 /
+        // "High" below), so they must not clobber a real NVD score/severity
+        // already on the node -- only NVD rows overwrite those.
+        v.cvss_score = CASE WHEN row.source = "CISA_KEV" AND coalesce(v.cvss_score, 0.0) > 0.0
+                            THEN v.cvss_score ELSE row.cvss_score END,
+        v.severity   = CASE WHEN row.source = "CISA_KEV" AND v.severity IS NOT NULL
+                            THEN v.severity ELSE row.severity END,
+        v.ransomware_use = CASE WHEN row.source = "CISA_KEV" THEN row.ransomware
+                                ELSE coalesce(v.ransomware_use, row.ransomware) END,
         v.patch_available=row.patch_available, v.source=row.source,
         v.last_synced_at=row.synced_at
 """

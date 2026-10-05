@@ -21,7 +21,8 @@ from graphrisk_core.queries import *  # noqa: F401,F403
 # detection, which draws heavily on OSV/GitHub Security Advisories for
 # OS-package and language-ecosystem (npm, pip, ...) CVEs that plain NVD/CISA
 # KEV ingestion never covers. Deliberately ON CREATE SET only for the
-# descriptive fields: if data-ingestion's own MERGE_VULN (see
+# descriptive fields (cvss_score and description are only *filled in*
+# when missing -- see the SET below): if data-ingestion's own MERGE_VULN (see
 # data-ingestion/ingest/07_nvd_cve.py) already populated this same CVE id
 # from NVD, a connector's scan of one device shouldn't overwrite that
 # curated record -- it should just confirm the node exists and move on to
@@ -43,6 +44,17 @@ MERGE_VULNERABILITY_FROM_FINDING = """
         v.source           = $source,
         v.patch_available  = false,
         v.first_seen_at    = toString(datetime())
-    SET v.last_synced_at = toString(datetime())
+    SET v.last_synced_at = toString(datetime()),
+        // Fill-in only, never overwrite: CISA KEV publishes no CVSS, so a
+        // KEV-ingested node carries cvss_score 0.0 (see data-ingestion's
+        // 09_daily_sync.py) until NVD fills it. When the scanner that found
+        // the CVE on a real device knows the score, use it rather than
+        // showing "CVSS 0.0" next to a High/Critical finding.
+        v.cvss_score = CASE
+            WHEN coalesce(v.cvss_score, 0.0) = 0.0 AND coalesce($cvss_score, 0.0) > 0.0
+            THEN $cvss_score ELSE v.cvss_score END,
+        v.description = CASE
+            WHEN coalesce(v.description, '') = '' THEN $description
+            ELSE v.description END
     RETURN v.id AS id, v.ransomware_use AS ransomware_use
 """

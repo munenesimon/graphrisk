@@ -1221,7 +1221,11 @@ class _DriverCveRow extends StatelessWidget {
                 style: const TextStyle(color: Colors.white, fontSize: 11, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
           ),
           const SizedBox(width: 8),
-          Text('${cve.severity} · CVSS ${cve.cvssScore.toStringAsFixed(1)}',
+          // 0.0 means "no score on record" (e.g. a CISA KEV-only entry), not a
+          // real CVSS of zero -- don't print it next to a High/Critical label.
+          Text(cve.cvssScore > 0
+                  ? '${cve.severity} · CVSS ${cve.cvssScore.toStringAsFixed(1)}'
+                  : cve.severity,
               style: TextStyle(color: _severityColor, fontSize: 11, fontWeight: FontWeight.w600)),
           if (cve.knownRansomware) ...[
             const SizedBox(width: 8),
