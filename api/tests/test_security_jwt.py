@@ -51,8 +51,15 @@ class TestAccessToken:
 
     def test_tampered_token_is_rejected(self):
         token = create_access_token(user_id="u1", tenant_id="t1", graph_tenant_id="demo", role="member")
-        # Flip the last character of the signature -- still well-formed JWT shape, wrong signature.
-        tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+        # Change the FIRST character of the signature -- still a well-formed
+        # JWT, wrong signature. Not the last one: an HS256 signature is 32
+        # bytes = 43 base64url chars, so the last char's low 2 bits are
+        # padding, and swapping it for a char that differs only in those
+        # bits decodes to the identical signature. That made this test fail
+        # roughly 1 run in 16 even though verification was working.
+        header_payload, signature = token.rsplit(".", 1)
+        first = "A" if signature[0] != "A" else "B"
+        tampered = f"{header_payload}.{first}{signature[1:]}"
         with pytest.raises(JWTError):
             decode_access_token(tampered)
 
