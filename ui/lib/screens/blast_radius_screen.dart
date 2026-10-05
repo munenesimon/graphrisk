@@ -373,7 +373,9 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
             slide: _layerSlides[0],
             child: _ExpandableSection(
               title: 'Exposed Risks',
-              subtitle: '${_result!.riskCount} risk${_result!.riskCount == 1 ? '' : 's'} activated',
+              subtitle: _isFullyEffective(_result!)
+                  ? '${_result!.riskCount} risk${_result!.riskCount == 1 ? '' : 's'} mitigated · exposed if this control fails'
+                  : '${_result!.riskCount} risk${_result!.riskCount == 1 ? '' : 's'} activated',
               color: kRed,
               icon: Icons.warning_amber_rounded,
               items: _result!.exposedRisks
@@ -390,7 +392,9 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
             slide: _layerSlides[1],
             child: _ExpandableSection(
               title: 'Affected Assets',
-              subtitle: '${_result!.assetCount} asset${_result!.assetCount == 1 ? '' : 's'} exposed',
+              subtitle: _isFullyEffective(_result!)
+                  ? '${_result!.assetCount} asset${_result!.assetCount == 1 ? '' : 's'} covered · exposed if this control fails'
+                  : '${_result!.assetCount} asset${_result!.assetCount == 1 ? '' : 's'} exposed',
               color: kOrange,
               icon: Icons.devices_outlined,
               items: _result!.affectedAssets
@@ -748,6 +752,51 @@ class _ExpandableSectionState extends State<_ExpandableSection> {
   }
 }
 
+// ── Wording by control effectiveness ─────────────────────────────────────────
+// Blast Radius lists everything a control mitigates, whatever its current
+// state -- it answers "what if this control fails?". So the wording has to
+// match the control's actual effectiveness: at 100% nothing is "activated"
+// yet (risk_score = likelihood × impact × 0), at 0% everything is.
+bool _isFullyEffective(BlastRadius r) => r.effectivenessScore >= 0.995;
+bool _isIneffective(BlastRadius r) => r.effectivenessScore <= 0.005;
+
+String _pct(BlastRadius r) => '${(r.effectivenessScore * 100).round()}%';
+
+String _riskExplanation(BlastRadius r, String risk) {
+  final c = '"${r.controlTitle}"';
+  final hasCause = r.riskDrivers.any((d) => d.risk == risk && d.cves.isNotEmpty);
+  if (_isFullyEffective(r)) {
+    return 'Currently mitigated by $c (${_pct(r)} effective), so its score is 0 '
+        'right now. This view shows what becomes exposed if that control fails '
+        'or weakens.'
+        '${hasCause ? ' The root cause below is still present and is worth fixing directly.' : ''}';
+  }
+  if (_isIneffective(r)) {
+    return '$c isn\'t mitigating this risk (${_pct(r)} effective), so it is '
+        'fully exposed.';
+  }
+  return 'Partly mitigated by $c (${_pct(r)} effective), so residual risk '
+      'remains. It becomes fully exposed if the control fails.';
+}
+
+String _assetExplanation(String asset, BlastRadius? r) {
+  final hasCause = r != null &&
+      r.riskDrivers.any((d) => d.asset == asset && d.cves.isNotEmpty);
+  final fix = hasCause ? 'Fix the root cause below' : 'Review the asset\'s risk links';
+  if (r != null && _isFullyEffective(r)) {
+    return '$asset is currently covered: "${r.controlTitle}" is fully effective '
+        'against the risks linked to it. If that control fails, $asset is '
+        'exposed through those risks.'
+        '${hasCause ? ' Fixing the root cause below removes the exposure instead of relying on the control.' : ''}';
+  }
+  if (r != null && _isIneffective(r)) {
+    return '$asset is exposed: "${r.controlTitle}" isn\'t mitigating the risks '
+        'linked to it. $fix, or put a compensating control in place.';
+  }
+  return '$asset is exposed because one or more risks linked to this asset '
+      'aren\'t fully mitigated by the control. $fix, or strengthen the control.';
+}
+
 // ── Individual item widgets ───────────────────────────────────────────────────
 class _RiskItem extends StatefulWidget {
   final String name;
@@ -792,10 +841,7 @@ class _RiskItemState extends State<_RiskItem> {
             const Divider(height: 1, color: Colors.white10),
             const SizedBox(height: 10),
             Text(
-              'This risk is activated when the "${widget.result.controlTitle}" '
-              'control fails to adequately mitigate the conditions that enable it. '
-              'With effectiveness at ${(widget.result.effectivenessScore * 100).toInt()}%, '
-              'residual risk remains.',
+              _riskExplanation(widget.result, widget.name),
               style:
                   const TextStyle(color: Colors.white60, fontSize: 12, height: 1.5),
             ),
@@ -875,9 +921,7 @@ class _AssetItemState extends State<_AssetItem> {
             const Divider(height: 1, color: Colors.white10),
             const SizedBox(height: 10),
             Text(
-              '${widget.name} is exposed because one or more risks linked to this '
-              'asset are activated by the control gap. Review the asset\'s risk '
-              'links and ensure compensating controls are in place.',
+              _assetExplanation(widget.name, widget.result),
               style:
                   const TextStyle(color: Colors.white60, fontSize: 12, height: 1.5),
             ),
