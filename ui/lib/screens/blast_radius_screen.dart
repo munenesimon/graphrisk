@@ -176,7 +176,7 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
         return name == null ? null : _RiskItem(name: name, result: r, initiallyExpanded: true);
       case 'Affected Assets':
         final name = at(r.affectedAssets);
-        return name == null ? null : _AssetItem(name: name, initiallyExpanded: true);
+        return name == null ? null : _AssetItem(name: name, result: r, initiallyExpanded: true);
       case 'Compliance Gaps':
         // Same three groups, same badges, as the list's Compliance Gaps layer.
         final g = r.frameworkGroups;
@@ -394,7 +394,7 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
               color: kOrange,
               icon: Icons.devices_outlined,
               items: _result!.affectedAssets
-                  .map((a) => _AssetItem(name: a))
+                  .map((a) => _AssetItem(name: a, result: _result!))
                   .toList(),
             ),
           ),
@@ -812,6 +812,7 @@ class _RiskItemState extends State<_RiskItem> {
                     fontFamily: 'monospace'),
               ),
             ),
+            _RootCause.forRisk(widget.result, widget.name),
           ],
         ]),
       ),
@@ -822,7 +823,10 @@ class _RiskItemState extends State<_RiskItem> {
 class _AssetItem extends StatefulWidget {
   final String name;
   final bool initiallyExpanded;
-  const _AssetItem({required this.name, this.initiallyExpanded = false});
+  /// For the root-cause section (which CVEs put this asset under which
+  /// risk); optional so the item still renders without it.
+  final BlastRadius? result;
+  const _AssetItem({required this.name, this.initiallyExpanded = false, this.result});
 
   @override
   State<_AssetItem> createState() => _AssetItemState();
@@ -877,6 +881,7 @@ class _AssetItemState extends State<_AssetItem> {
               style:
                   const TextStyle(color: Colors.white60, fontSize: 12, height: 1.5),
             ),
+            if (widget.result != null) _RootCause.forAsset(widget.result!, widget.name),
           ],
         ]),
       ),
@@ -1121,6 +1126,118 @@ class _FrameworkControlItemState extends State<_FrameworkControlItem> {
         ]),
       ),
     );
+  }
+}
+
+// ── Root cause ───────────────────────────────────────────────────────────────
+/// The "why" behind an exposed risk or asset: which CVEs put each asset
+/// under each risk, as recorded on the risk-to-asset link when a
+/// connector reported the finding (see blast_radius.py's _risk_drivers).
+/// Shown inside an expanded risk (grouped by asset) or asset (grouped by
+/// risk); renders nothing when there's no driver data at all.
+class _RootCause extends StatelessWidget {
+  final List<RiskDriver> drivers;
+  /// True: each group is labelled with its asset (inside a risk item).
+  /// False: labelled with its risk (inside an asset item).
+  final bool groupByAsset;
+
+  _RootCause.forRisk(BlastRadius result, String risk)
+      : drivers = result.riskDrivers.where((d) => d.risk == risk).toList(),
+        groupByAsset = true;
+
+  _RootCause.forAsset(BlastRadius result, String asset)
+      : drivers = result.riskDrivers.where((d) => d.asset == asset).toList(),
+        groupByAsset = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (drivers.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('ROOT CAUSE',
+            style: TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+        const SizedBox(height: 6),
+        for (final d in drivers)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(groupByAsset ? 'On ${d.asset}' : d.risk,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              if (d.cves.isEmpty)
+                const Text(
+                  'No CVE recorded for this link -- it was linked manually, or before '
+                  'GraphRisk started recording root causes.',
+                  style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.4),
+                )
+              else ...[
+                for (final cve in d.cves) _DriverCveRow(cve: cve),
+                if (d.totalCves > d.cves.length)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text('+${d.totalCves - d.cves.length} more on ${d.asset} -- see Vulnerabilities',
+                        style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                  ),
+              ],
+            ]),
+          ),
+      ]),
+    );
+  }
+}
+
+class _DriverCveRow extends StatelessWidget {
+  final DriverCve cve;
+  const _DriverCveRow({required this.cve});
+
+  Color get _severityColor {
+    switch (cve.severity.toLowerCase()) {
+      case 'critical': return kRed;
+      case 'high':     return kOrange;
+      default:         return Colors.white54;
+    }
+  }
+
+  Future<void> _openNvd() async {
+    final uri = Uri.parse('https://nvd.nist.gov/vuln/detail/${Uri.encodeComponent(cve.cveId)}');
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final row = InkWell(
+      onTap: _openNvd,
+      borderRadius: BorderRadius.circular(4),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(color: kSurface2, borderRadius: BorderRadius.circular(4)),
+            child: Text(cve.cveId,
+                style: const TextStyle(color: Colors.white, fontSize: 11, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+          ),
+          const SizedBox(width: 8),
+          Text('${cve.severity} · CVSS ${cve.cvssScore.toStringAsFixed(1)}',
+              style: TextStyle(color: _severityColor, fontSize: 11, fontWeight: FontWeight.w600)),
+          if (cve.knownRansomware) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(color: kRed.withOpacity(0.15), borderRadius: BorderRadius.circular(4)),
+              child: const Text('Known ransomware use',
+                  style: TextStyle(color: kRed, fontSize: 10, fontWeight: FontWeight.w700)),
+            ),
+          ],
+          const Spacer(),
+          const Icon(Icons.open_in_new, color: Colors.white38, size: 13),
+        ]),
+      ),
+    );
+    return cve.description.isEmpty ? row : Tooltip(message: cve.description, waitDuration: const Duration(milliseconds: 400), child: row);
   }
 }
 

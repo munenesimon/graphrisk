@@ -266,3 +266,35 @@ def test_ingest_assets_cascades_risk_on_an_already_existing_asset_too(fake_graph
     risk_params = _ensure_risk_call(fake_graph)
     assert risk_params is not None
     assert risk_params["asset_id"] == "existing-id"
+
+
+def _ingest_one_finding(fake_graph, ransomware_use, cve_id="CVE-2026-3333", severity="Critical"):
+    fake_graph.query.return_value = []
+    fake_graph.write.side_effect = _write_side_effect(ransomware_use=ransomware_use)
+    CheckRegistry()._ingest_assets(
+        _result([{
+            "name": "Simo", "asset_type": "Endpoint",
+            "vulnerabilities": [{"cve_id": cve_id, "severity": severity, "source": "Wazuh (NVD)"}],
+        }]),
+        "tenant-1",
+    )
+    return _ensure_risk_call(fake_graph)
+
+
+def test_cisa_kev_known_ransomware_string_files_under_ransomware_risk(fake_graph):
+    # CISA KEV's real value is the string "Known", not a boolean.
+    params = _ingest_one_finding(fake_graph, ransomware_use="Known")
+    assert params["title"] == "Ransomware Infection Risk"
+
+
+def test_cisa_kev_unknown_ransomware_string_is_not_treated_as_ransomware(fake_graph):
+    # Regression: "Unknown" is a non-empty string, and a bare truthiness
+    # check filed every KEV-listed CVE under Ransomware Infection Risk.
+    params = _ingest_one_finding(fake_graph, ransomware_use="Unknown")
+    assert params["title"] == "Unpatched Vulnerability Risk"
+
+
+def test_risk_link_records_the_driving_cve(fake_graph):
+    params = _ingest_one_finding(fake_graph, ransomware_use=None, cve_id="CVE-2026-4444")
+    assert params["cve_id"] == "CVE-2026-4444"
+    assert params["source"] == "Wazuh (NVD)"

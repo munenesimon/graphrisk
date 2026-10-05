@@ -251,7 +251,13 @@ class CheckRegistry:
         if not profile:
             return
         ransomware_use = merge_result[0].get("ransomware_use") if merge_result else None
-        if ransomware_use:
+        # CISA KEV records knownRansomwareCampaignUse as the *string* "Known"
+        # or "Unknown" (data-ingestion/ingest/06_cisa_kev.py stores it as-is).
+        # This used to be a bare truthiness check, which "Unknown" passes --
+        # so every KEV-listed CVE was filed under Ransomware Infection Risk,
+        # even with no evidence of ransomware use. Only an explicit "Known"
+        # counts (True is accepted too, for any future boolean source).
+        if ransomware_use is True or str(ransomware_use or "").strip().lower() == "known":
             title = self._RANSOMWARE_RISK_TITLE
             description = "Risk of ransomware encrypting critical business data and systems"
         else:
@@ -270,6 +276,11 @@ class CheckRegistry:
             "likelihood": profile["likelihood"],
             "impact": profile["impact"],
             "owner": "Security Team",
+            # Root cause: recorded on the Risk-[:IMPACTS]->Asset link itself,
+            # so Blast Radius can answer "which CVE put this asset under
+            # this risk?" instead of only "this asset is under this risk".
+            "cve_id": vuln.get("cve_id"),
+            "source": vuln.get("source", "connector"),
         })
 
     @property

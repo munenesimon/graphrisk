@@ -65,6 +65,55 @@ def _group_frameworks(row: dict, scope: str):
     return grouped, included
 
 
+# How many driving CVEs to return per (risk, asset) link -- a single
+# endpoint can easily carry hundreds of Critical/High findings. The full
+# count still comes back as total_cves.
+MAX_DRIVER_CVES_PER_LINK = 10
+
+
+def _is_known_ransomware(value) -> bool:
+    # CISA KEV stores knownRansomwareCampaignUse as "Known"/"Unknown" text.
+    return value is True or str(value or "").strip().lower() == "known"
+
+
+def _as_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _risk_drivers(tenant_id: str, control_id: str) -> list[dict]:
+    """
+    The root cause behind each exposed asset: for every (risk, asset) link
+    under this control, the CVEs recorded as the reason for it -- known
+    ransomware-used CVEs first, then by CVSS, capped at
+    MAX_DRIVER_CVES_PER_LINK (total_cves has the real count). A link with
+    no recorded CVEs comes back with an empty list, so the UI can say the
+    cause isn't recorded rather than imply there's none.
+    """
+    out = []
+    for row in run_query(queries.BLAST_RADIUS_RISK_DRIVERS, {"control_id": control_id, "tenant_id": tenant_id}) or []:
+        risk, asset = row.get("risk"), row.get("asset")
+        if not risk or not asset:
+            continue
+        cves = [c for c in (row.get("cves") or []) if isinstance(c, dict) and c.get("cve_id")]
+        cves.sort(key=lambda c: (not _is_known_ransomware(c.get("ransomware_use")), -_as_float(c.get("cvss_score"))))
+        out.append({
+            "risk": risk,
+            "asset": asset,
+            "total_cves": max(len(row.get("cve_ids") or []), len(cves)),
+            "cves": [{
+                "cve_id": c["cve_id"],
+                "severity": c.get("severity") or "Unknown",
+                "cvss_score": _as_float(c.get("cvss_score")),
+                "known_ransomware": _is_known_ransomware(c.get("ransomware_use")),
+                "description": (c.get("description") or "")[:300],
+            } for c in cves[:MAX_DRIVER_CVES_PER_LINK]],
+        })
+    return out
+
+
 @router.get("/blast-radius/control/{control_id}")
 async def blast_radius_control(
     control_id: str,
@@ -95,6 +144,8 @@ async def blast_radius_control(
             # Requirements in other frameworks (e.g. Kenya DPA) exposed via the
             # curated crosswalk rather than a direct SATISFIES link.
             "mapped_framework_controls": mapped,
+            # Root cause: which CVEs put each affected asset under each risk.
+            "risk_drivers": _risk_drivers(user.graph_tenant_id, control_id),
         },
         "regulatory_obligations": _regulatory_obligations(user.graph_tenant_id, row.get("affected_asset_ids") or []),
         "summary": {"risk_count": row["risk_count"], "asset_count": row["asset_count"], "framework_count": len(included)}

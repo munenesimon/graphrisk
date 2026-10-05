@@ -66,6 +66,9 @@ class BlastRadius {
   final FrameworkGroups       frameworkGroups;
   final List<String>          mappedFrameworkControls;
   final RegulatoryObligations regulatoryObligations;
+  /// Root cause: per (risk, asset) link, the CVEs recorded as the reason
+  /// for it -- see blast_radius.py's _risk_drivers.
+  final List<RiskDriver>      riskDrivers;
 
   BlastRadius({
     required this.controlTitle,
@@ -82,6 +85,7 @@ class BlastRadius {
     required this.frameworkGroups,
     required this.mappedFrameworkControls,
     required this.regulatoryObligations,
+    this.riskDrivers = const [],
   });
 
   factory BlastRadius.fromJson(Map<String, dynamic> j) {
@@ -102,8 +106,54 @@ class BlastRadius {
       frameworkGroups:         FrameworkGroups.fromJson(br['frameworks'] as Map<String, dynamic>?),
       mappedFrameworkControls: List<String>.from(br['mapped_framework_controls'] ?? []),
       regulatoryObligations:   RegulatoryObligations.fromJson(j['regulatory_obligations'] as Map<String, dynamic>?),
+      riskDrivers: (br['risk_drivers'] as List? ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map(RiskDriver.fromJson)
+          .toList(),
     );
   }
+}
+
+/// Why one asset is under one risk: the CVEs recorded on that link.
+/// `cves` is capped server-side (strongest first); `totalCves` is the full
+/// count. An empty `cves` with `totalCves == 0` means no cause was recorded
+/// (linked by hand, or before root-cause tracking existed).
+class RiskDriver {
+  final String          risk;
+  final String          asset;
+  final int             totalCves;
+  final List<DriverCve> cves;
+
+  RiskDriver({required this.risk, required this.asset, required this.totalCves, required this.cves});
+
+  factory RiskDriver.fromJson(Map<String, dynamic> j) => RiskDriver(
+    risk:      j['risk']?.toString()  ?? '',
+    asset:     j['asset']?.toString() ?? '',
+    totalCves: j['total_cves'] is num ? (j['total_cves'] as num).toInt() : 0,
+    cves: (j['cves'] as List? ?? [])
+        .whereType<Map<String, dynamic>>()
+        .map(DriverCve.fromJson)
+        .toList(),
+  );
+}
+
+class DriverCve {
+  final String cveId;
+  final String severity;
+  final double cvssScore;
+  final bool   knownRansomware;
+  final String description;
+
+  DriverCve({required this.cveId, required this.severity, required this.cvssScore,
+             required this.knownRansomware, required this.description});
+
+  factory DriverCve.fromJson(Map<String, dynamic> j) => DriverCve(
+    cveId:           j['cve_id']?.toString()      ?? '',
+    severity:        j['severity']?.toString()    ?? 'Unknown',
+    cvssScore:       j['cvss_score'] is num ? (j['cvss_score'] as num).toDouble() : 0.0,
+    knownRansomware: j['known_ransomware'] == true,
+    description:     j['description']?.toString() ?? '',
+  );
 }
 
 /// A control's frameworks split into voluntary standards (always shown),
