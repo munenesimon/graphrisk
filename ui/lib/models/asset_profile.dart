@@ -13,6 +13,11 @@ class AssetProfile {
   final int vulnerabilityTotal;
   final List<Map<String, dynamic>> vulnerabilities;
   final List<Map<String, dynamic>> risks;
+  /// Other names this device was reported under, merged in because they
+  /// share a serial number, MAC address or cloud instance id.
+  final List<String> alsoKnownAs;
+  /// Assets that only share a hostname -- flagged, not merged: {id, name, reason}.
+  final List<Map<String, dynamic>> possibleDuplicates;
 
   AssetProfile({
     required this.asset,
@@ -24,6 +29,8 @@ class AssetProfile {
     required this.vulnerabilityTotal,
     required this.vulnerabilities,
     required this.risks,
+    this.alsoKnownAs = const [],
+    this.possibleDuplicates = const [],
   });
 
   factory AssetProfile.fromJson(Map<String, dynamic> j) {
@@ -46,6 +53,10 @@ class AssetProfile {
           .map((e) => (e as Map).cast<String, dynamic>())
           .toList(),
       risks: ((j['risks'] as List?) ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList(),
+      alsoKnownAs: ((j['also_known_as'] as List?) ?? []).map((e) => e.toString()).toList(),
+      possibleDuplicates: ((j['possible_duplicates'] as List?) ?? [])
+          .map((e) => (e as Map).cast<String, dynamic>())
+          .toList(),
     );
   }
 }

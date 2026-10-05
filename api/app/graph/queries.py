@@ -97,5 +97,45 @@ GET_ASSET_DETAIL = """
     WITH a, risks, collect(DISTINCT CASE WHEN v IS NULL THEN NULL ELSE
          {cve_id: v.id, severity: v.severity, cvss_score: v.cvss_score,
           ransomware_use: v.ransomware_use, description: v.description} END) AS vulns
-    RETURN a {.*} AS asset, risks, vulns AS vulnerabilities
+    OPTIONAL MATCH (a)-[d:POSSIBLY_SAME_AS]-(other:Asset {tenant_id: $tenant_id})
+    WITH a, risks, vulns, collect(DISTINCT CASE WHEN other IS NULL THEN NULL ELSE
+         {id: other.id, name: other.name, reason: d.reason} END) AS possible_duplicates
+    RETURN a {.*} AS asset, risks, vulns AS vulnerabilities, possible_duplicates
+"""
+
+# Device identifiers recorded on each asset, for matching one device across
+# connectors (see CheckRegistry._ingest_assets and profile.device_keys).
+GET_ASSET_IDENTIFIERS = """
+    MATCH (a:Asset {tenant_id: $tenant_id})
+    RETURN a.id AS id, a.name AS name,
+           coalesce(a.device_serials, []) AS serial,
+           coalesce(a.device_macs, []) AS mac,
+           coalesce(a.device_instance_ids, []) AS instance,
+           coalesce(a.device_hostnames, []) AS hostname
+"""
+
+# Adds identifiers (and, when a record was merged in under another name, that
+# name as an alias) to an asset, keeping each list free of duplicates.
+MERGE_ASSET_IDENTIFIERS = """
+    MATCH (a:Asset {id: $asset_id, tenant_id: $tenant_id})
+    SET a.device_serials = reduce(acc = [], x IN coalesce(a.device_serials, []) + $serial |
+            CASE WHEN x IN acc THEN acc ELSE acc + x END),
+        a.device_macs = reduce(acc = [], x IN coalesce(a.device_macs, []) + $mac |
+            CASE WHEN x IN acc THEN acc ELSE acc + x END),
+        a.device_instance_ids = reduce(acc = [], x IN coalesce(a.device_instance_ids, []) + $instance |
+            CASE WHEN x IN acc THEN acc ELSE acc + x END),
+        a.device_hostnames = reduce(acc = [], x IN coalesce(a.device_hostnames, []) + $hostname |
+            CASE WHEN x IN acc THEN acc ELSE acc + x END),
+        a.aliases = reduce(acc = [], x IN coalesce(a.aliases, []) + $aliases |
+            CASE WHEN x IN acc THEN acc ELSE acc + x END)
+    RETURN a.id AS id
+"""
+
+# Two assets that share only a hostname: flagged for a person to judge,
+# never merged automatically.
+LINK_POSSIBLE_DUPLICATE = """
+    MATCH (a:Asset {id: $asset_id, tenant_id: $tenant_id}), (b:Asset {id: $other_id, tenant_id: $tenant_id})
+    MERGE (a)-[r:POSSIBLY_SAME_AS]->(b)
+    SET r.reason = $reason, r.detected_at = $detected_at
+    RETURN a.id AS id
 """

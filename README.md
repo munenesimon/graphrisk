@@ -38,7 +38,7 @@ It's built with organisations in Kenya and East Africa in mind: those that need 
 2. You're in the demo organisation — a Kenyan commercial bank. Things worth trying:
    - **Blast Radius** — pick a control from the dropdown (e.g. *Multi-Factor Authentication*). **List** view shows the full cascade, with a **Root cause** under each exposed risk and asset (the CVEs behind the link, with severity, CVSS and a *Known ransomware use* flag from CISA KEV); **Graph** view shows the control at the hub with one node per category — tap a category to expand it (only one opens at a time), and tap any item for its details.
    - **Frameworks** — tap a framework to see exactly which of its requirements are covered (directly, or via the NIST crosswalk) and which aren't.
-   - **Vulnerabilities**, **Assets**, **Regulatory** — real CVE impact, the asset inventory, and the notification duties that follow from the regulatory profile.
+   - **Vulnerabilities**, **Assets**, **Regulatory** — real CVE impact, the asset inventory, and the notification duties that follow from the regulatory profile. Tap an asset for its own page: everything its connectors report about the device, and what to patch first.
 
 The demo is **read-only**: everyone shares it, so saving connector credentials, running connectors and editing data are switched off there (the API returns `403`). To try those, register your own account.
 
@@ -98,21 +98,23 @@ As in the browser, the demo account is read-only through the API: `GET` requests
 - **Vendor breach cascade** — given a third-party vendor breach, the graph traverses `PROVIDES → Asset → Risk` edges to surface every activated risk and flag any under-implemented mitigating controls.
 - **Connector-discovered assets** — connectors can report the devices they see, not just pass/fail checks. Each Wazuh agent becomes an `Asset`; per-device Critical/High CVE findings become `Vulnerability` nodes linked to it and roll into tenant risks (CISA-KEV ransomware-flagged CVEs into *Ransomware Infection Risk*, the rest into *Unpatched Vulnerability Risk*), reusing whatever controls already mitigate those risks — so a real device appears in Blast Radius as soon as it has real findings.
 - **Root cause provenance** — every connector-created `Risk → Asset` link records the CVEs that caused it (`IMPACTS.driver_cves`). Blast Radius returns them per link, ransomware-flagged first and then by CVSS, so "this laptop is exposed to Ransomware Infection Risk" comes with *why*: e.g. two WinRAR CVEs CISA lists as used in ransomware campaigns — and therefore what to patch.
+- **Universal device profile** — every connector that can see devices maps what it knows onto one vendor-neutral profile (identity, health, OS, hardware, network, software, vulnerabilities, configuration, protection, ownership, cloud, activity). Each connector declares which sections it can fill, so the asset page shows whatever the connected tools provide, labels every section with its source, and says which connector could fill what's missing. The page leads with **Fix first**: vulnerable software grouped by package, ransomware-linked first ("update WinRAR", not two CVE ids). IPs, MAC addresses, serials and assigned users are shown to owners/admins only.
+- **One device, many tools** — when several connectors report the same machine, their records merge into one asset if they share a serial number, MAC address (virtual/VPN/randomised MACs excluded) or cloud instance id. A shared hostname alone is flagged as "possibly the same device" rather than merged, since wrongly combining two machines is worse than showing one twice.
 - **Per-requirement framework coverage** — beyond the coverage percentage, every requirement in a framework is reported as covered directly, covered via the crosswalk, or not covered, along with which of the tenant's controls satisfy it.
 - **Automatic vulnerability correlation** — bidirectional: daily threat intelligence sync auto-links newly-published CVEs to matching assets by vendor/product name (with structured CPE-based matching, not free-text search), and newly-onboarded assets are immediately checked against the full vulnerability history at creation time. Either direction cascades risk score updates without manual triage.
 
 ### Universal Connector Architecture
 A three-layer adapter pattern (BaseConnector → per-vendor Adapter → CheckRegistry) lets any security tool plug into the graph with minimal new code, regardless of its authentication style.
 
-| Connector | Auth Pattern | Checks | Validation |
-|---|---|---|---|
-| Mock | None | 1 | Live Neo4j write + risk cascade verified |
-| Microsoft Entra ID | OAuth 2.0 client credentials | 5 | Structurally complete |
-| AWS | SDK-managed IAM keys (boto3) | 4 | Offline-verified via moto |
-| Okta | Static API key header | 4 | Offline-verified via responses |
-| Wazuh | HTTP Basic → session JWT (self-hosted SIEM/XDR) | 2 | Live-verified against a self-hosted manager and indexer: agent connectivity, SCA, and per-device CVE findings flowing through to Blast Radius root cause |
-| CrowdStrike Falcon | OAuth 2.0 client credentials | 4 | Offline-verified via responses; pending a live tenant |
-| Qualys VM | HTTP Basic (per request), XML-only API | 4 | Offline-verified via responses; pending a live subscription |
+| Connector | Auth Pattern | Checks | Validation | Device profile |
+|---|---|---|---|---|
+| Mock | None | 1 | Live Neo4j write + risk cascade verified | — |
+| Microsoft Entra ID | OAuth 2.0 client credentials | 6 | Structurally complete | Directory devices: join type, OS, last sign-in, managed/compliant (offline-verified) |
+| AWS | SDK-managed IAM keys (boto3) | 5 | Offline-verified via moto | EC2 instances: state, platform, addresses, region, instance type, security groups, internet exposure (offline-verified via moto) |
+| Okta | Static API key header | 5 | Offline-verified via responses | Registered devices: model, serial, OS, assigned user, managed, disk encryption (offline-verified) |
+| Wazuh | HTTP Basic → session JWT (self-hosted SIEM/XDR) | 2 | Live-verified against a self-hosted manager and indexer: agent connectivity, SCA, and per-device CVE findings flowing through to Blast Radius root cause | Identity, health, OS, hardware, network & ports, software, vulnerability counts, configuration benchmarks with failed checks (offline-verified; pending a live run of the new profile fields) |
+| CrowdStrike Falcon | OAuth 2.0 client credentials | 4 | Offline-verified via responses; pending a live tenant | Hosts, sensor/prevention status, last user, cloud placement, open detections, Spotlight findings per host (offline-verified) |
+| Qualys VM | HTTP Basic (per request), XML-only API | 4 | Offline-verified via responses; pending a live subscription | Hosts (identity, OS, IP), confirmed severity 4-5 counts, last scan (offline-verified) |
 
 Adding a new vendor means writing one adapter file (~150 lines) and one registration line. The registry, graph write, and cascade logic never change. Qualys's VM API is the one exception worth calling out: it's XML-only (no JSON output option), so that adapter parses responses with Python's built-in `xml.etree.ElementTree` rather than pulling in a new dependency for one vendor.
 
@@ -258,6 +260,7 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 | Kenyan regulatory crosswalk | ⚠️ GraphRisk-curated mappings, not an official crosswalk — coverage means mapped controls are in place, not legal compliance (not legal advice). All 27 Data Protection Act / General Regulations 2021 requirements now cite the exact statutory section or regulation sub-clause (verified against the primary text, including regulation 32(a)-(k) of the 2021 Regulations in full). |
 | Regulatory clocks | ⚠️ Driven by a self-declared regulatory profile and per-asset personal-data flags. Deadlines run from becoming aware of a breach, and whether an incident is "significant" enough to report is a human judgement GraphRisk doesn't make — it shows the duty and its condition. Live in the Flutter UI (Regulatory Profile screen, Assets screen, and as a layer on Blast Radius / Vulnerability Impact) as well as the API. |
 | Root cause | ✅ Live — CVEs behind each connector-created risk link, with CISA KEV ransomware flag. Links created before this feature (or by hand) show "No CVE recorded" until the connector runs again. CISA KEV publishes no CVSS, so a KEV-only CVE shows severity alone until NVD or the scanner supplies a score. |
+| Device profiles | ⚠️ All seven connectors map devices onto the shared profile, but only offline-verified so far — Wazuh is the first to be checked live. The new device checks (AWS EC2 exposure, Entra device compliance, Okta disk encryption) need extra read permissions (`ec2:Describe*`, `Device.Read.All`, `okta.devices.read`); without them that one check errors and the rest still run. Cross-tool merging only happens on serial/MAC/instance id; hostname matches are flagged for review. |
 | Connector scheduling | ⚠️ Connectors run on demand; no scheduled runs yet. Self-hosted tools behind a quick tunnel need the tunnel up (and its URL re-saved if it changed) for each run. |
 | Production hardening | ⚠️ e2-micro Neo4j VM is memory-constrained (~1.4s query latency) |
 
@@ -274,6 +277,10 @@ This is a portfolio/early-stage project. Here's what's real versus what's still 
 - [ ] Downloadable compliance / blast-radius report (audit evidence)
 - [ ] CrowdStrike / Qualys connector live-data validation (pending real tenants)
 - [ ] In-app starter setup for newly registered tenants
+- [x] Universal device profile and asset page, with connector capabilities
+- [x] Device profiles for all seven connectors; one device across tools merged on hardware identifiers
+- [ ] Live validation of device profiles beyond Wazuh
+- [ ] Confirm or dismiss "possibly the same device" from the asset page
 - [x] CrowdStrike / Qualys connector adapters
 - [x] Connector management UI in Flutter
 - [x] Persistent encrypted connector credential storage

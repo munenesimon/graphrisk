@@ -221,3 +221,76 @@ def group_vulnerable_packages(findings: list[dict]) -> list[dict]:
         g["cve_count"] = len(g["cve_ids"])
     out.sort(key=lambda g: (-_SEVERITY_RANK.get(g["max_severity"], 0), -g["cve_count"]))
     return out
+
+
+# ── Matching one device across connectors (see CheckRegistry._ingest_assets) ──
+# Strong identifiers: if two connectors report the same one, it's the same
+# physical/virtual machine, so their records are merged into one asset.
+# A hostname alone is NOT strong -- two different machines can share one
+# ("ubuntu", "DESKTOP-1", a reused name) -- so a hostname-only match is only
+# flagged as "possibly the same device" for a person to judge.
+STRONG_KEYS = ("serial", "mac", "instance")
+
+_JUNK_SERIALS = {
+    "", "0", "none", "null", "n/a", "na", "unknown", "default string", "not specified",
+    "to be filled by o.e.m.", "system serial number", "chassis serial number",
+    "123456789", "0123456789", "serial", "invalid",
+}
+# Virtual/VPN adapter vendors whose MACs are shared across many machines
+# (or re-generated freely) and so can't identify one device.
+_VIRTUAL_MAC_PREFIXES = (
+    "00:05:9a",  # Cisco AnyConnect virtual adapter
+    "00:50:56", "00:0c:29", "00:1c:14",  # VMware
+    "00:15:5d",  # Hyper-V
+    "08:00:27", "0a:00:27",  # VirtualBox
+    "00:ff:",    # TAP-Windows / OpenVPN
+)
+_GENERIC_HOSTNAMES = {"localhost", "ubuntu", "debian", "kali", "raspberrypi", "desktop", "laptop", "pc", "host"}
+
+
+def _norm_mac(value) -> str | None:
+    v = str(value or "").strip().lower().replace("-", ":")
+    parts = v.split(":")
+    if len(parts) != 6 or not all(len(p) == 2 for p in parts):
+        return None
+    try:
+        first = int(parts[0], 16)
+    except ValueError:
+        return None
+    if v in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"):
+        return None
+    if first & 0b10:            # locally administered (randomised, virtual)
+        return None
+    if v.startswith(_VIRTUAL_MAC_PREFIXES):
+        return None
+    return v
+
+
+def hostname_key(value) -> str | None:
+    """Short, case-insensitive hostname ("SIMO.corp.local" -> "simo"), or
+    None for empty/generic names that say nothing about identity."""
+    v = str(value or "").strip().lower().split(".")[0]
+    return v if v and v not in _GENERIC_HOSTNAMES else None
+
+
+def device_keys(raw_profile: dict | None) -> dict[str, list[str]]:
+    """The identifiers in a profile that can tie it to one device:
+    {"serial": [...], "mac": [...], "instance": [...], "hostname": [...]}."""
+    p = raw_profile if isinstance(raw_profile, dict) else {}
+    identity = p.get("identity") if isinstance(p.get("identity"), dict) else {}
+    network = p.get("network") if isinstance(p.get("network"), dict) else {}
+    keys: dict[str, list[str]] = {}
+    serial = str(identity.get("serial_number") or "").strip()
+    if serial.lower() not in _JUNK_SERIALS and len(serial) >= 4:
+        keys["serial"] = [serial.upper()]
+    macs = network.get("mac_addresses") or []
+    macs = [m for m in (_norm_mac(x) for x in (macs if isinstance(macs, list) else [macs])) if m]
+    if macs:
+        keys["mac"] = sorted(set(macs))
+    instance = str(identity.get("cloud_instance_id") or "").strip()
+    if instance:
+        keys["instance"] = [instance]
+    host = hostname_key(identity.get("hostname"))
+    if host:
+        keys["hostname"] = [host]
+    return keys

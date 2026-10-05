@@ -145,11 +145,17 @@ class CheckRegistry:
                 a["name"]: a.get("id")
                 for a in run_query(queries.GET_ALL_ASSETS, {"tenant_id": tenant_id})
             }
+            matcher = _DeviceMatcher(tenant_id, result)
             for asset in result.discovered_assets:
                 name = asset.get("name")
                 if not name:
                     continue
                 asset_id = existing_ids_by_name.get(name)
+                if asset_id is None:
+                    # Same device already known under another name (another
+                    # connector's hostname) -- matched on serial number, MAC
+                    # address or cloud instance id; see _DeviceMatcher.
+                    asset_id = matcher.find(asset.get("profile"))
                 if asset.get("profile_only"):
                     # Detail about a device some other check discovers --
                     # never create an asset from it (see models.py).
@@ -180,6 +186,7 @@ class CheckRegistry:
                     })
                     existing_ids_by_name[name] = asset_id
 
+                matcher.record(asset_id, name, asset.get("profile"))
                 self._store_profile(asset.get("profile"), asset_id, tenant_id, result)
 
                 for vuln in asset.get("vulnerabilities", []):
@@ -344,6 +351,119 @@ class CheckRegistry:
     def all_checks(self) -> dict[str, str]:
         """Map of check_id -> connector_id for every registered check."""
         return dict(self._check_map)
+
+
+class _DeviceMatcher:
+    """
+    Ties one physical/virtual device reported by several connectors to a
+    single asset (step 3 of the universal device profile).
+
+    Merges automatically only on a *strong* identifier -- serial number,
+    MAC address (virtual/VPN/randomised MACs excluded) or cloud instance
+    id -- because wrongly combining two different machines is worse than
+    showing one machine twice. A hostname-only match ("SIMO" vs
+    "simo.corp.local") is recorded as POSSIBLY_SAME_AS for a person to
+    judge on the asset page, never merged.
+
+    Lazy: the tenant's identifiers are only read the first time a
+    discovered asset actually carries one, so connectors that report no
+    device profile cost no extra query.
+    """
+
+    def __init__(self, tenant_id: str, result: CheckResult):
+        self.tenant_id = tenant_id
+        self.result = result
+        self._loaded = False
+        self._strong: dict[tuple, str] = {}       # (kind, value) -> asset id
+        self._hosts: dict[str, set] = {}          # hostname key -> asset ids
+        self._names: dict[str, str] = {}          # asset id -> name
+
+    def _load(self):
+        if self._loaded:
+            return
+        self._loaded = True
+        from app.graph.connection import run_query
+        from app.graph import queries
+        from .profile import STRONG_KEYS, hostname_key
+        for row in run_query(queries.GET_ASSET_IDENTIFIERS, {"tenant_id": self.tenant_id}) or []:
+            aid = row.get("id")
+            if not aid:
+                continue
+            self._names[aid] = row.get("name")
+            for kind in STRONG_KEYS:
+                for v in row.get(kind) or []:
+                    self._strong.setdefault((kind, v), aid)
+            for h in (row.get("hostname") or []) + [hostname_key(row.get("name"))]:
+                if h:
+                    self._hosts.setdefault(h, set()).add(aid)
+
+    def find(self, raw_profile) -> Optional[str]:
+        from .profile import STRONG_KEYS, device_keys
+        keys = device_keys(raw_profile)
+        if not any(k in keys for k in STRONG_KEYS):
+            return None
+        self._load()
+        for kind in STRONG_KEYS:
+            for v in keys.get(kind, []):
+                if (kind, v) in self._strong:
+                    return self._strong[(kind, v)]
+        return None
+
+    _REASONS = {"serial": "same serial number", "mac": "same MAC address", "instance": "same cloud instance id"}
+
+    def record(self, asset_id: str, name: str, raw_profile) -> None:
+        """Remember this asset's identifiers (in the graph and for the rest
+        of this run), note an alias if it was merged in under another name,
+        and flag hostname-only lookalikes."""
+        if not raw_profile:
+            # Only connectors that report a device profile take part in
+            # matching; a bare name-only asset behaves exactly as before.
+            return
+        from .profile import STRONG_KEYS, device_keys, hostname_key
+        keys = device_keys(raw_profile)
+        host_keys = set(keys.get("hostname", [])) | ({hostname_key(name)} - {None})
+        if not keys and not host_keys:
+            return
+        self._load()
+        from datetime import datetime, timezone
+        from app.graph.connection import run_write
+        from app.graph import queries
+
+        aliases = []
+        known_name = self._names.get(asset_id)
+        if known_name and known_name != name:
+            # Merged in from a record with a different name.
+            shared = next((k for k in STRONG_KEYS
+                           if any(self._strong.get((k, v)) == asset_id for v in keys.get(k, []))), None)
+            reason = self._REASONS.get(shared, "matched device")
+            aliases.append(f"{name} ({self.result.source}, {reason})")
+        run_write(queries.MERGE_ASSET_IDENTIFIERS, {
+            "asset_id": asset_id, "tenant_id": self.tenant_id,
+            "serial": keys.get("serial", []), "mac": keys.get("mac", []),
+            "instance": keys.get("instance", []), "hostname": sorted(host_keys),
+            "aliases": aliases,
+        })
+
+        # Hostname-only lookalikes: same short hostname, different asset,
+        # and no strong identifier in common -- flag, don't merge.
+        lookalikes = set()
+        for h in host_keys:
+            lookalikes |= self._hosts.get(h, set())
+        lookalikes.discard(asset_id)
+        for other in sorted(lookalikes):
+            run_write(queries.LINK_POSSIBLE_DUPLICATE, {
+                "asset_id": asset_id, "other_id": other, "tenant_id": self.tenant_id,
+                "reason": "same hostname, no shared serial/MAC/instance id",
+                "detected_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+        # This run's later assets can match against this one too.
+        self._names.setdefault(asset_id, name)
+        for kind in STRONG_KEYS:
+            for v in keys.get(kind, []):
+                self._strong.setdefault((kind, v), asset_id)
+        for h in host_keys:
+            self._hosts.setdefault(h, set()).add(asset_id)
 
 
 # ── Singleton registry — import `registry` from this module everywhere ────────

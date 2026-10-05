@@ -125,8 +125,16 @@ async def get_asset_profile(asset_id: str, user: CurrentUser = Depends(get_curre
         -_num(v.get("cvss_score")),
     ))
 
+    # Matching identifiers live on the asset node for CheckRegistry's use;
+    # the profile already shows them (masked where needed), so never echo
+    # the raw lists here.
+    asset = {k: v for k, v in (detail.get("asset") or {}).items() if not k.startswith("device_")}
     return {
-        "asset": detail.get("asset") or {},
+        "asset": asset,
+        # Other names this device was reported under and merged from (same
+        # serial/MAC/instance id), and assets that only share a hostname.
+        "also_known_as": asset.pop("aliases", None) or [],
+        "possible_duplicates": [d for d in (detail.get("possible_duplicates") or []) if d and d.get("id")],
         "profile": profile,
         "hidden_fields": hidden,
         "can_view_sensitive": can_view_sensitive,

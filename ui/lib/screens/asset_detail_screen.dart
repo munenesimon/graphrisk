@@ -114,6 +114,47 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
           for (final s in allSources) _Chip(text: 'From $s', color: kAccent),
         if (a['holds_personal_data'] == true) const _Chip(text: 'Holds personal data', color: kOrange),
       ]),
+      if (p.alsoKnownAs.isNotEmpty) ...[
+        const SizedBox(height: 12),
+        _Note(
+          icon: Icons.merge_type,
+          text: 'Also reported as ${p.alsoKnownAs.join('; ')}. '
+              'These records were merged because they share a hardware identifier.',
+        ),
+      ],
+      if (p.possibleDuplicates.isNotEmpty) ...[
+        const SizedBox(height: 12),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: kOrange.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: kOrange.withOpacity(0.3)),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Possibly the same device',
+                style: TextStyle(color: kOrange, fontSize: 12, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            const Text(
+              'These assets share a hostname but no serial number, MAC address or cloud instance id, '
+              'so they were not merged automatically.',
+              style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4),
+            ),
+            const SizedBox(height: 6),
+            Wrap(spacing: 8, runSpacing: 6, children: [
+              for (final d in p.possibleDuplicates)
+                ActionChip(
+                  backgroundColor: kSurface2,
+                  label: Text(d['name']?.toString() ?? 'Asset',
+                      style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  onPressed: () => context.go(
+                      '/assets/${d['id']}?name=${Uri.encodeQueryComponent(d['name']?.toString() ?? '')}'),
+                ),
+            ]),
+          ]),
+        ),
+      ],
       if (p.hiddenFields.isNotEmpty) ...[
         const SizedBox(height: 12),
         _Note(
