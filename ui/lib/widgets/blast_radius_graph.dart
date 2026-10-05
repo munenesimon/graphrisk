@@ -21,6 +21,13 @@ import '../models/dashboard.dart';
 /// category actually contain" than a permanently-expanded diagram ever
 /// was.
 ///
+/// Expanding a category also moves the camera: the view animates in on
+/// that category and its items while the rest of the diagram dims and
+/// falls away to the edges, and collapsing it (tapping the category again,
+/// or the hub) animates back out to the overview. Items themselves never
+/// expand in place -- tapping one opens its detail, and closing that
+/// returns to the same zoomed view.
+///
 /// This is deliberately a two-level tree, not a general graph -- the
 /// blast-radius API returns each category as a flat list of names, with
 /// no edges between items in different categories (which asset triggered
@@ -46,7 +53,8 @@ class BlastRadiusGraph extends StatefulWidget {
   State<BlastRadiusGraph> createState() => _BlastRadiusGraphState();
 }
 
-class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
+class _BlastRadiusGraphState extends State<BlastRadiusGraph>
+    with SingleTickerProviderStateMixin {
   // How many leaf items a single category will draw before collapsing
   // the rest into a "+N more" node -- unbounded categories (a control
   // mapped to 40 framework requirements) would otherwise overlap into an
@@ -62,10 +70,25 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
   // anything else.
   static const double _minArcPerLeaf = 95;
 
+  // Furthest the camera will zoom in on one category -- a category with
+  // a single item would otherwise fill the screen with one huge chip.
+  static const double _maxFocusScale = 1.5;
+  // The canvas is always sized for the expanded ring, even when collapsed:
+  // if it grew and shrank with the content, every expand/collapse would
+  // shift the canvas origin mid-animation and make the view jump.
+  static const double _canvasSize = (_itemRadius + 180) * 2;
+
   final _transform = TransformationController();
+  late final AnimationController _zoomAnim =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 550));
+  Animation<Matrix4>? _zoomTween;
   Size? _lastFittedSize;
-  double _canvasSize = 1100;
-  double _contentHalfExtent = 470;
+  // What the camera should frame, in canvas coordinates: the whole
+  // diagram when collapsed, or the expanded category plus its items.
+  Rect _focusRect = Rect.zero;
+  // Set when the focus changed because of a tap, so the next fit animates
+  // instead of jumping.
+  bool _pendingAnimatedFit = false;
 
   // Which category (by label) currently has its items expanded -- null
   // means the diagram is fully collapsed to just the hub and the
@@ -73,7 +96,17 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
   String? _expandedLabel;
 
   @override
+  void initState() {
+    super.initState();
+    _zoomAnim.addListener(() {
+      final t = _zoomTween;
+      if (t != null) _transform.value = t.value;
+    });
+  }
+
+  @override
   void dispose() {
+    _zoomAnim.dispose();
     _transform.dispose();
     super.dispose();
   }
@@ -86,16 +119,24 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
       // centered rather than wherever the previous one was left.
       _lastFittedSize = null;
       _expandedLabel = null;
+      _pendingAnimatedFit = false;
     }
   }
 
   void _toggleCategory(String label) {
     setState(() {
       _expandedLabel = (_expandedLabel == label) ? null : label;
-      // The diagram's content bounds change when a category opens or
-      // closes -- re-fit on the next frame instead of leaving the view
-      // scaled/centered for whatever was on screen before.
-      _lastFittedSize = null;
+      // Zoom in on the newly expanded category (or back out to the
+      // overview) once this frame has laid it out.
+      _pendingAnimatedFit = true;
+    });
+  }
+
+  void _collapse() {
+    if (_expandedLabel == null) return;
+    setState(() {
+      _expandedLabel = null;
+      _pendingAnimatedFit = true;
     });
   }
 
@@ -139,15 +180,32 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
     );
   }
 
-  void _fitToView(Size viewport) {
+  /// Frames [_focusRect] in [viewport] -- animated for a tap, instant for
+  /// a first layout or a window resize.
+  void _fitToView(Size viewport, {bool animate = false}) {
     if (!mounted) return;
     _lastFittedSize = viewport;
-    final center = _canvasSize / 2;
-    final scale = (math.min(viewport.width, viewport.height) / (2 * _contentHalfExtent))
-        .clamp(0.25, 1.0)
+    final target = _matrixFor(_focusRect, viewport);
+    if (!animate) {
+      _zoomAnim.stop();
+      _transform.value = target;
+      return;
+    }
+    _zoomTween = Matrix4Tween(begin: _transform.value.clone(), end: target)
+        .animate(CurvedAnimation(parent: _zoomAnim, curve: Curves.easeInOutCubic));
+    _zoomAnim.forward(from: 0);
+  }
+
+  Matrix4 _matrixFor(Rect rect, Size viewport) {
+    const pad = 24.0;
+    final maxScale = _expandedLabel == null ? 1.0 : _maxFocusScale;
+    final scale = math
+        .min((viewport.width - 2 * pad) / rect.width, (viewport.height - 2 * pad) / rect.height)
+        .clamp(0.25, maxScale)
         .toDouble();
-    _transform.value = Matrix4.identity()
-      ..translate(viewport.width / 2 - center * scale, viewport.height / 2 - center * scale)
+    final c = rect.center;
+    return Matrix4.identity()
+      ..translate(viewport.width / 2 - c.dx * scale, viewport.height / 2 - c.dy * scale)
       ..scale(scale);
   }
 
@@ -208,7 +266,8 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
     }
 
     final nodes = <_PositionedNode>[];
-    final edges = <List<Offset>>[];
+    final edges = <_Edge>[];
+    final focusing = _expandedLabel != null;
 
     const center = Offset.zero;
     nodes.add(_PositionedNode(
@@ -218,10 +277,14 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
       icon: Icons.shield,
       label: widget.result.controlTitle,
       isCenter: true,
+      dimmed: focusing,
+      // While zoomed in on a category, the hub is the way back out.
+      onTap: focusing ? _collapse : null,
     ));
 
     final catCount = categories.length;
-    double maxRadiusUsed = _categoryRadius;
+    // Collapsed: frame the hub and the category ring (labels included).
+    Rect focus = Rect.fromCircle(center: center, radius: _categoryRadius + 80);
 
     for (var ci = 0; ci < catCount; ci++) {
       final cat = categories[ci];
@@ -237,11 +300,17 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
         label: '${cat.label} (${cat.items.length})',
         isCenter: false,
         isExpanded: isExpanded,
+        dimmed: focusing && !isExpanded,
         onTap: () => _toggleCategory(cat.label),
       ));
-      edges.add(_circleToCircle(center, 39, catPos, 29));
+      edges.add(_Edge(_circleToCircle(center, 39, catPos, 29),
+          color: isExpanded ? cat.color : null, dimmed: focusing && !isExpanded));
 
       if (!isExpanded) continue;
+
+      // Expanded: frame this category's node box (circle + label) and,
+      // below, each of its item chips.
+      focus = Rect.fromLTWH(catPos.dx - _kNodeBoxWidth / 2, catPos.dy - 29, _kNodeBoxWidth, 58 + 36);
 
       final shown = cat.items.take(_maxItemsPerCategory).toList();
       final overflow = cat.items.length - shown.length;
@@ -253,7 +322,6 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
       final window = leafCount > 1
           ? (_minArcPerLeaf * (leafCount - 1) / _itemRadius).clamp(math.pi / 6, math.pi * 0.9).toDouble()
           : 0.0;
-      if (_itemRadius > maxRadiusUsed) maxRadiusUsed = _itemRadius;
 
       for (var ii = 0; ii < leafCount; ii++) {
         final t = leafCount == 1 ? 0.5 : ii / (leafCount - 1);
@@ -277,17 +345,23 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
           isOverflow: isOverflow,
           onTap: isOverflow ? null : () => _openItemDetail(cat.label, itemIndex, label),
         ));
-        edges.add(_circleToRect(catPos, 29, itemPos, 55, 21));
+        edges.add(_Edge(_circleToRect(catPos, 29, itemPos, 55, 21), color: cat.color));
+        focus = focus.expandToInclude(Rect.fromCenter(center: itemPos, width: 110, height: 42));
       }
+      focus = focus.inflate(16);
     }
 
-    _canvasSize = (maxRadiusUsed + 180) * 2;
-    _contentHalfExtent = maxRadiusUsed + 80;
+    _focusRect = focus.shift(const Offset(_canvasSize / 2, _canvasSize / 2));
 
     return LayoutBuilder(builder: (context, constraints) {
       final viewport = Size(constraints.maxWidth, constraints.maxHeight);
-      if (_lastFittedSize != viewport) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _fitToView(viewport));
+      if (_lastFittedSize != viewport || _pendingAnimatedFit) {
+        // Animate only when the focus changed from a tap on an
+        // already-laid-out view; a first layout or resize just snaps.
+        final animate = _pendingAnimatedFit && _lastFittedSize == viewport;
+        _pendingAnimatedFit = false;
+        _lastFittedSize = viewport;
+        WidgetsBinding.instance.addPostFrameCallback((_) => _fitToView(viewport, animate: animate));
       }
       return Stack(children: [
         InteractiveViewer(
@@ -296,20 +370,37 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
           minScale: 0.25,
           maxScale: 2.5,
           boundaryMargin: const EdgeInsets.all(400),
+          // A manual pan/zoom mid-animation wins over the animation.
+          onInteractionStart: (_) => _zoomAnim.stop(),
           child: SizedBox(
             width: _canvasSize,
             height: _canvasSize,
             child: Stack(children: [
               Positioned.fill(
                 child: CustomPaint(
-                  painter: _EdgePainter(edges, center: Offset(_canvasSize / 2, _canvasSize / 2)),
+                  painter: _EdgePainter(edges, center: const Offset(_canvasSize / 2, _canvasSize / 2)),
                 ),
               ),
               for (final n in nodes)
                 Positioned(
                   left: _canvasSize / 2 + n.position.dx - (n.isLeaf ? 55 : _kNodeBoxWidth / 2),
                   top: _canvasSize / 2 + n.position.dy - (n.isLeaf ? 21 : n.size / 2),
-                  child: n.isLeaf ? _LeafChip(node: n) : _CircleNode(node: n),
+                  child: AnimatedOpacity(
+                    opacity: n.dimmed ? (n.isCenter ? 0.45 : 0.3) : 1.0,
+                    duration: const Duration(milliseconds: 350),
+                    child: n.isLeaf
+                        // Items fade in as the camera arrives, rather than
+                        // popping in before it gets there.
+                        ? TweenAnimationBuilder<double>(
+                            key: ValueKey('leaf:${_expandedLabel}:${n.label}'),
+                            tween: Tween(begin: 0, end: 1),
+                            duration: const Duration(milliseconds: 400),
+                            curve: Curves.easeOut,
+                            builder: (_, v, child) => Opacity(opacity: v, child: child),
+                            child: _LeafChip(node: n),
+                          )
+                        : _CircleNode(node: n),
+                  ),
                 ),
             ]),
           ),
@@ -317,13 +408,13 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
         Positioned(
           top: 8, right: 8,
           child: Tooltip(
-            message: 'Recenter the diagram',
+            message: _expandedLabel == null ? 'Recenter the diagram' : 'Recenter on this category',
             child: Material(
               color: kSurface2.withOpacity(0.8),
               borderRadius: BorderRadius.circular(8),
               child: InkWell(
                 borderRadius: BorderRadius.circular(8),
-                onTap: () => _fitToView(viewport),
+                onTap: () => _fitToView(viewport, animate: true),
                 child: const Padding(
                   padding: EdgeInsets.all(8),
                   child: Icon(Icons.center_focus_strong, color: Colors.white70, size: 18),
@@ -332,7 +423,6 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
             ),
           ),
         ),
-        if (_expandedLabel == null)
           Positioned(
             bottom: 8, left: 8,
             child: IgnorePointer(
@@ -342,8 +432,11 @@ class _BlastRadiusGraphState extends State<BlastRadiusGraph> {
                   color: kSurface2.withOpacity(0.8),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: const Text('Tap a category to see its items',
-                    style: TextStyle(color: Colors.white54, fontSize: 11)),
+                child: Text(
+                    _expandedLabel == null
+                        ? 'Tap a category to zoom in on its items'
+                        : 'Tap an item for details · tap the category or the center to zoom out',
+                    style: const TextStyle(color: Colors.white54, fontSize: 11)),
               ),
             ),
           ),
@@ -400,6 +493,8 @@ class _PositionedNode {
   final bool isLeaf;
   final bool isOverflow;
   final bool isExpanded;
+  /// Shown faded because another category has the focus.
+  final bool dimmed;
   final VoidCallback? onTap;
   _PositionedNode({
     required this.position,
@@ -411,28 +506,46 @@ class _PositionedNode {
     this.isLeaf = false,
     this.isOverflow = false,
     this.isExpanded = false,
+    this.dimmed = false,
     this.onTap,
   });
 }
 
+/// One spoke: its two trimmed endpoints, plus how to draw it -- tinted
+/// with the category's color when it belongs to the focused category,
+/// faded when another category has the focus.
+class _Edge {
+  final Offset a;
+  final Offset b;
+  final Color? color;
+  final bool dimmed;
+  _Edge(List<Offset> ends, {this.color, this.dimmed = false})
+      : a = ends[0],
+        b = ends[1];
+}
+
 class _EdgePainter extends CustomPainter {
-  final List<List<Offset>> edges;
+  final List<_Edge> edges;
   final Offset center;
   _EdgePainter(this.edges, {required this.center});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withOpacity(0.12)
-      ..strokeWidth = 1.2
-      ..style = PaintingStyle.stroke;
     for (final e in edges) {
-      canvas.drawLine(center + e[0], center + e[1], paint);
+      final paint = Paint()
+        ..color = e.color != null
+            ? e.color!.withOpacity(0.45)
+            : Colors.white.withOpacity(e.dimmed ? 0.05 : 0.12)
+        ..strokeWidth = e.color != null ? 1.6 : 1.2
+        ..style = PaintingStyle.stroke;
+      canvas.drawLine(center + e.a, center + e.b, paint);
     }
   }
 
+  // The canvas no longer changes size on expand/collapse, so nothing else
+  // forces a repaint -- compare the edges themselves.
   @override
-  bool shouldRepaint(covariant _EdgePainter oldDelegate) => false;
+  bool shouldRepaint(covariant _EdgePainter oldDelegate) => !identical(oldDelegate.edges, edges);
 }
 
 void _showDetail(BuildContext context, String text) {
