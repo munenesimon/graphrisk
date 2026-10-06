@@ -196,7 +196,8 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
       final shown = _showAllVulns ? p.vulnerabilities : p.vulnerabilities.take(8).toList();
       widgets.add(_Card(
         title: 'Linked vulnerabilities',
-        subtitle: '${p.vulnerabilityTotal} CVE${p.vulnerabilityTotal == 1 ? '' : 's'} linked to this asset',
+        subtitle: '${p.vulnerabilityTotal} distinct CVE${p.vulnerabilityTotal == 1 ? '' : 's'} linked to this asset '
+            '(a CVE that affects several packages is counted once)',
         icon: Icons.bug_report_outlined,
         color: kOrange,
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -720,9 +721,21 @@ class _BenchmarkTile extends StatelessWidget {
   }
 }
 
-class _RiskRow extends StatelessWidget {
+class _RiskRow extends StatefulWidget {
   final Map<String, dynamic> risk;
   const _RiskRow({required this.risk});
+
+  @override
+  State<_RiskRow> createState() => _RiskRowState();
+}
+
+class _RiskRowState extends State<_RiskRow> {
+  // A busy device can have hundreds of driver CVEs; show the first few and
+  // let the reader expand the rest.
+  static const int _previewCount = 5;
+  bool _showAll = false;
+
+  Map<String, dynamic> get risk => widget.risk;
 
   String _controlsLine(List<Map> controls) {
     if (controls.isEmpty) return 'No control is linked to this risk yet.';
@@ -758,7 +771,30 @@ class _RiskRow extends StatelessWidget {
         ]),
         if (drivers.isNotEmpty) ...[
           const SizedBox(height: 4),
-          Text('Caused by ${drivers.join(', ')}', style: const TextStyle(color: Colors.white60, fontSize: 12)),
+          Text(
+            drivers.length <= _previewCount
+                ? 'Caused by ${drivers.join(', ')}'
+                : _showAll
+                    ? 'Caused by ${drivers.length} CVEs: ${drivers.join(', ')}'
+                    : 'Caused by ${drivers.length} CVEs, including ${drivers.take(_previewCount).join(', ')}',
+            style: const TextStyle(color: Colors.white60, fontSize: 12),
+          ),
+          if (drivers.length > _previewCount)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                style: TextButton.styleFrom(
+                  padding: EdgeInsets.zero,
+                  minimumSize: const Size(0, 28),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                onPressed: () => setState(() => _showAll = !_showAll),
+                child: Text(
+                  _showAll ? 'Show fewer' : 'Show all ${drivers.length}',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ),
         ],
         const SizedBox(height: 4),
         Text(_controlsLine(controls), style: const TextStyle(color: Colors.white54, fontSize: 12)),

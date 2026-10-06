@@ -562,7 +562,8 @@ class WazuhAdapter(BaseConnector):
         agents = [a for a in agents if a.get("id") != "000"][:MAX_AGENTS_PER_SCA_SWEEP]
 
         total_pass = 0
-        total_checks = 0
+        total_fail = 0
+        total_not_applicable = 0
         agents_with_data = 0
         profiles = []
         for agent in agents:
@@ -572,8 +573,17 @@ class WazuhAdapter(BaseConnector):
                 agents_with_data += 1
             benchmarks = []
             for policy in policies:
-                total_pass   += policy.get("pass", 0)
-                total_checks += policy.get("total_checks", 0)
+                passed = policy.get("pass") or 0
+                total = policy.get("total_checks") or 0
+                failed_n = policy.get("fail")
+                if failed_n is None:
+                    failed_n = max(total - passed, 0)
+                # Wazuh also reports checks that don't apply to the device.
+                # Like Wazuh's own score, count only applicable checks, so the
+                # run message and the device page show the same numbers.
+                total_pass += passed
+                total_fail += failed_n
+                total_not_applicable += max(total - passed - failed_n, 0)
                 benchmarks.append({
                     "name": policy.get("name") or policy.get("policy_id"),
                     "score": policy.get("score"),
@@ -592,8 +602,9 @@ class WazuhAdapter(BaseConnector):
                     "profile": {"configuration": {"benchmarks": benchmarks}},
                 })
 
+        total_checks = total_pass + total_fail
         score = round(total_pass / total_checks, 4) if total_checks > 0 else 0.0
-        failed = total_checks - total_pass
+        failed = total_fail
 
         return CheckResult(
             discovered_assets=profiles,
@@ -611,8 +622,9 @@ class WazuhAdapter(BaseConnector):
             affected_count=failed,
             total_count=total_checks,
             detail=(
-                f"{failed} of {total_checks} SCA checks failing across "
+                f"{failed} of {total_checks} applicable SCA checks failing across "
                 f"{agents_with_data} of {len(agents)} active agents with SCA data"
+                + (f" ({total_not_applicable} not applicable)" if total_not_applicable else "")
                 if total_checks > 0 else
                 f"No SCA policy data returned for {len(agents)} active agents "
                 "-- confirm the SCA module is enabled on these agents"

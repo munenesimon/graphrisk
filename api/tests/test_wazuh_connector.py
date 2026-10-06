@@ -310,3 +310,40 @@ if __name__ == "__main__":
     for host, ip in [("localhost-manager.attacker.test", "127.0.0.1"), ("metadata-manager.attacker.test", "169.254.169.254")]:
         test_wazuh_adapter_still_rejects_loopback_and_link_local_targets(host, ip)
         print(f"OK: rejects {host} ({ip})")
+
+
+@responses.activate
+def test_sca_counts_only_applicable_checks_and_match_the_device_page():
+    """Wazuh also reports checks that don't apply to a device. The run
+    message must count only applicable ones (pass + fail), like Wazuh's own
+    score, so it agrees with the benchmark card on the device page."""
+    with _mock_private_dns():
+        responses.add(
+            responses.POST, f"{BASE_URL}/security/user/authenticate",
+            json={"data": {"token": "fake-wazuh-jwt"}}, status=200,
+        )
+        responses.add(
+            responses.GET, f"{BASE_URL}/agents",
+            json={"data": {"affected_items": [
+                {"id": "001", "status": "active", "name": "Simo", "os": {"platform": "windows"}},
+            ]}},
+            status=200,
+        )
+        responses.add(
+            responses.GET, f"{BASE_URL}/sca/001",
+            json={"data": {"affected_items": [
+                {"policy_id": "cis_win10", "name": "CIS Windows 10", "pass": 115, "fail": 302, "total_checks": 424},
+            ]}},
+            status=200,
+        )
+        adapter = WazuhAdapter(
+            tenant_id="test-tenant",
+            config={"api_url": BASE_URL, "username": "u", "password": "p", "verify_ssl": False},
+        )
+        sca = adapter.run_check("wazuh_sca_compliance")
+
+    assert sca.total_count == 417
+    assert sca.affected_count == 302
+    assert sca.score == round(115 / 417, 4)
+    assert "302 of 417 applicable SCA checks failing" in sca.detail
+    assert "(7 not applicable)" in sca.detail
