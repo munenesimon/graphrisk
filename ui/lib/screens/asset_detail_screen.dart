@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../constants/colors.dart';
 import '../models/asset_profile.dart';
 import '../services/api_service.dart';
+import '../widgets/motion.dart';
 
 /// One asset, in as much detail as its connectors can provide.
 ///
@@ -48,6 +49,8 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
     }
   }
 
+  static const _titleStyle = TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700);
+
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
@@ -59,12 +62,13 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
           label: const Text('Assets', style: TextStyle(color: Colors.white54)),
         ),
         const SizedBox(height: 8),
-        if (_loading)
-          const Padding(
-            padding: EdgeInsets.all(40),
-            child: Center(child: CircularProgressIndicator(color: kAccent)),
-          )
-        else if (_error != null)
+        if (_loading) ...[
+          // The name is known from the list row, so show it straight away --
+          // it's also the landing spot for the name gliding in from Assets.
+          HeroText(tag: 'asset-name-${widget.assetId}', text: widget.assetName, style: _titleStyle),
+          const SizedBox(height: 10),
+          const PageSkeleton(layout: SkeletonLayout.detail, standalone: false),
+        ] else if (_error != null)
           Text('Error: $_error', style: const TextStyle(color: kRed))
         else
           ..._content(_profile!),
@@ -88,8 +92,7 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
       Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(name,
-                style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700)),
+            HeroText(tag: 'asset-name-${widget.assetId}', text: name, style: _titleStyle),
             const SizedBox(height: 4),
             Text(
               [a['asset_type'], a['criticality'], a['environment']]
@@ -194,9 +197,15 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
     // ── Linked vulnerabilities ──
     if (p.vulnerabilities.isNotEmpty) {
       final shown = _showAllVulns ? p.vulnerabilities : p.vulnerabilities.take(8).toList();
+      // A scanner reports one finding per affected package, so its total can
+      // be higher than the number of distinct CVEs here. Only explain that
+      // when it's actually the case for this device.
+      final findings = p.sections['vulnerabilities']?.fields['total'];
+      final sharedCves = findings is num && findings > p.vulnerabilityTotal;
       widgets.add(_Card(
         title: 'Linked vulnerabilities',
-        subtitle: '${p.vulnerabilityTotal} CVE${p.vulnerabilityTotal == 1 ? '' : 's'} linked to this asset',
+        subtitle: '${p.vulnerabilityTotal} distinct CVE${p.vulnerabilityTotal == 1 ? '' : 's'} linked to this asset'
+            '${sharedCves ? ' (the scan found $findings because some CVEs affect several packages)' : ''}',
         icon: Icons.bug_report_outlined,
         color: kOrange,
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -283,6 +292,12 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
         continue;
       }
       final label = section == 'extra' ? field : _label('$section.$field');
+      // One item per line: each is a sentence of its own (a product and how
+      // it was detected, or a setting to change).
+      if (section == 'protection' && value is List) {
+        rows.add(_FieldRow(label: label, value: value.map((e) => e.toString()).join('\n')));
+        continue;
+      }
       rows.add(_FieldRow(label: label, value: _fmtValue(field, value)));
     }
     return rows;
@@ -363,7 +378,9 @@ const _fieldLabels = <String, String>{
   'vulnerabilities.scanner': 'Scanner',
   'protection.status': 'Status',
   'protection.product': 'Product',
+  'protection.detected': 'Detected',
   'protection.policy': 'Policy',
+  'protection.policy_gaps': 'Settings to fix',
   'protection.last_detection': 'Last detection',
   'protection.detections_count': 'Detections',
   'ownership.assigned_user': 'Assigned user',
@@ -720,9 +737,21 @@ class _BenchmarkTile extends StatelessWidget {
   }
 }
 
-class _RiskRow extends StatelessWidget {
+class _RiskRow extends StatefulWidget {
   final Map<String, dynamic> risk;
   const _RiskRow({required this.risk});
+
+  @override
+  State<_RiskRow> createState() => _RiskRowState();
+}
+
+class _RiskRowState extends State<_RiskRow> {
+  // A busy device can have hundreds of driver CVEs; show the first few and
+  // let the reader expand the rest.
+  static const int _previewCount = 5;
+  bool _showAll = false;
+
+  Map<String, dynamic> get risk => widget.risk;
 
   String _controlsLine(List<Map> controls) {
     if (controls.isEmpty) return 'No control is linked to this risk yet.';
@@ -758,7 +787,30 @@ class _RiskRow extends StatelessWidget {
         ]),
         if (drivers.isNotEmpty) ...[
           const SizedBox(height: 4),
-          Text('Caused by ${drivers.join(', ')}', style: const TextStyle(color: Colors.white60, fontSize: 12)),
+          Text(
+            drivers.length <= _previewCount
+                ? 'Caused by ${drivers.join(', ')}'
+                : _showAll
+                    ? 'Caused by ${drivers.length} CVEs: ${drivers.join(', ')}'
+                    : 'Caused by ${drivers.length} CVEs, including ${drivers.take(_previewCount).join(', ')}',
+            style: const TextStyle(color: Colors.white60, fontSize: 12),
+          ),
+          if (drivers.length > _previewCount)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                style: TextButton.styleFrom(
+                  padding: EdgeInsets.zero,
+                  minimumSize: const Size(0, 28),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                onPressed: () => setState(() => _showAll = !_showAll),
+                child: Text(
+                  _showAll ? 'Show fewer' : 'Show all ${drivers.length}',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ),
         ],
         const SizedBox(height: 4),
         Text(_controlsLine(controls), style: const TextStyle(color: Colors.white54, fontSize: 12)),

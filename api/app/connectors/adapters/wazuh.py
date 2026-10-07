@@ -55,6 +55,7 @@ config["control_titles"] = {"wazuh_agent_connectivity": "...", ...}
 if your graph uses different names.
 """
 import logging
+import re
 from urllib.parse import urlsplit, urlunsplit
 
 from ..base import BaseConnector, _assert_safe_url
@@ -97,6 +98,85 @@ MAX_AGENTS_PER_INVENTORY = 50
 # the list, not the whole benchmark (the Wazuh dashboard has the rest).
 MAX_FAILED_CHECKS_PER_POLICY = 10
 
+# ── Endpoint protection detection ────────────────────────────────────────
+# Wazuh itself isn't an antivirus, so "the agent is reporting" says nothing
+# about whether a device is protected. These tables let the device profile
+# (and the EDR check) say what protection is actually present, from data
+# syscollector already collects:
+#
+#   * a running process -- the strongest evidence: the engine is running
+#     right now (it does NOT prove signatures are current or how well it
+#     would stop an attack);
+#   * an installed package -- the product is on the device, but may not be
+#     running;
+#   * Microsoft Defender's CIS policy checks (Windows) -- whether real-time
+#     protection etc. is enforced by policy.
+#
+# process name (lowercase) -> (product, kind)
+PROTECTION_PROCESSES: dict[str, tuple[str, str]] = {
+    # Windows
+    "msmpeng.exe":          ("Microsoft Defender Antivirus", "Antivirus"),
+    "mssense.exe":          ("Microsoft Defender for Endpoint", "EDR"),
+    "csfalconservice.exe":  ("CrowdStrike Falcon", "EDR"),
+    "sentinelagent.exe":    ("SentinelOne", "EDR"),
+    "cylancesvc.exe":       ("Cylance", "EDR"),
+    "repmgr.exe":           ("VMware Carbon Black", "EDR"),
+    "xagt.exe":             ("Trellix Endpoint Security (HX)", "EDR"),
+    "ekrn.exe":             ("ESET", "Antivirus"),
+    "avp.exe":              ("Kaspersky", "Antivirus"),
+    "vsserv.exe":           ("Bitdefender", "Antivirus"),
+    "bdservicehost.exe":    ("Bitdefender", "Antivirus"),
+    "savservice.exe":       ("Sophos", "Antivirus"),
+    "sophoshealth.exe":     ("Sophos", "Antivirus"),
+    "ccsvchst.exe":         ("Symantec / Norton", "Antivirus"),
+    "mcshield.exe":         ("McAfee / Trellix", "Antivirus"),
+    "mfemms.exe":           ("McAfee / Trellix", "Antivirus"),
+    "avastsvc.exe":         ("Avast", "Antivirus"),
+    "avgsvc.exe":           ("AVG", "Antivirus"),
+    "mbamservice.exe":      ("Malwarebytes", "Antivirus"),
+    "ntrtscan.exe":         ("Trend Micro", "Antivirus"),
+    "wrsa.exe":             ("Webroot", "Antivirus"),
+    # Linux / macOS
+    "falcon-sensor":        ("CrowdStrike Falcon", "EDR"),
+    "falcond":              ("CrowdStrike Falcon", "EDR"),
+    "wdavdaemon":           ("Microsoft Defender for Endpoint", "EDR"),
+    "s1-agent":             ("SentinelOne", "EDR"),
+    "sentineld":            ("SentinelOne", "EDR"),
+    "esets_daemon":         ("ESET", "Antivirus"),
+    "clamd":                ("ClamAV", "Antivirus"),
+}
+
+# Installed-package names that mean a protection product is on the device.
+# Whole-word patterns, so e.g. "ESET" doesn't match "reset".
+PROTECTION_PACKAGES: tuple[tuple[str, str], ...] = (
+    (r"\bcrowdstrike\b", "CrowdStrike Falcon"),
+    (r"\bsentinel ?one\b|\bsentinel agent\b", "SentinelOne"),
+    (r"\bcylance", "Cylance"),
+    (r"\bcarbon black\b", "VMware Carbon Black"),
+    (r"\beset\b", "ESET"),
+    (r"\bkaspersky\b", "Kaspersky"),
+    (r"\bbitdefender\b", "Bitdefender"),
+    (r"\bsophos\b", "Sophos"),
+    (r"\bnorton\b|\bsymantec endpoint\b", "Symantec / Norton"),
+    (r"\bmcafee\b|\btrellix\b", "McAfee / Trellix"),
+    (r"\bavast\b", "Avast"),
+    (r"\bavg (antivirus|internet security)\b", "AVG"),
+    (r"\bmalwarebytes\b", "Malwarebytes"),
+    (r"\btrend micro\b", "Trend Micro"),
+    (r"\bwebroot\b", "Webroot"),
+    (r"\bclamav\b", "ClamAV"),
+    (r"\bmicrosoft defender for endpoint\b|\bmdatp\b", "Microsoft Defender for Endpoint"),
+)
+
+# Processes / packages fetched per agent for the check above. Generous --
+# a busy Windows laptop runs a few hundred processes.
+MAX_PROCESSES_PER_AGENT = 1000
+MAX_PACKAGES_PER_AGENT = 2000
+MAX_DEFENDER_POLICY_GAPS = 5
+
+# Markers detect_protection adds for the EDR check; never stored.
+_INTERNAL_PROFILE_KEYS = frozenset({"running", "running_products"})
+
 _AGENT_STATUS_LABELS = {
     "active": "online",
     "disconnected": "offline",
@@ -113,7 +193,7 @@ class WazuhAdapter(BaseConnector):
     # connectors/profile.py). Hardware/network/software need syscollector;
     # vulnerabilities need the indexer credentials.
     PROFILE_SECTIONS = ("identity", "health", "os", "hardware", "network",
-                        "software", "vulnerabilities", "configuration")
+                        "software", "vulnerabilities", "configuration", "protection")
 
     def authenticate(self) -> None:
         base_url = self.config["api_url"].rstrip("/")
@@ -301,7 +381,7 @@ class WazuhAdapter(BaseConnector):
                 out[str(b["key"])] = sev
         return out
 
-    def _fetch_inventory(self, agent_id: str) -> dict | None:
+    def _fetch_inventory(self, agent_id: str, platform: str | None = None) -> dict | None:
         """
         Device detail from Wazuh's syscollector inventory, as partial
         profile sections. Each request is independent -- one failing (an
@@ -358,7 +438,12 @@ class WazuhAdapter(BaseConnector):
         if macs or ports:
             prof["network"] = {"mac_addresses": macs, "listening_ports": ports}
 
-        packages = get("packages", {"limit": 1})
+        # Names too (not just the count): installed security products show
+        # up here even when they aren't running.
+        packages = get("packages", {"limit": MAX_PACKAGES_PER_AGENT, "select": "name"})
+        if packages is None:
+            # Older managers may reject "select" -- still get the count.
+            packages = get("packages", {"limit": 1})
         hotfixes = get("hotfixes", {"limit": 10})
         software = {}
         if packages is not None:
@@ -369,7 +454,55 @@ class WazuhAdapter(BaseConnector):
         if software:
             prof["software"] = software
 
+        processes = get("processes", {"limit": MAX_PROCESSES_PER_AGENT, "select": "name"})
+        process_names = None if processes is None else {
+            str(p.get("name")).strip().lower()
+            for p in processes.get("affected_items") or [] if p.get("name")
+        }
+        package_names = None if packages is None else [
+            str(p.get("name")) for p in packages.get("affected_items") or [] if p.get("name")
+        ]
+        defender = self._defender_policy(agent_id) if (platform or "").lower() == "windows" else None
+        protection = detect_protection(process_names, package_names, defender)
+        if protection:
+            prof["protection"] = protection
+
         return prof if succeeded else None
+
+    def _defender_policy(self, agent_id: str) -> dict | None:
+        """Microsoft Defender settings from the agent's CIS benchmark: how
+        many Defender-related checks pass (real-time protection, behaviour
+        monitoring, ...), and the titles of a few that fail. None when SCA
+        has nothing on Defender for this agent, or isn't available."""
+        try:
+            policies = (self._wazuh_get(f"/sca/{agent_id}").get("data") or {}).get("affected_items") or []
+        except Exception as e:
+            logger.debug(f"Wazuh SCA policies for agent {agent_id} unavailable: {e}")
+            return None
+        passed, failed, gaps = 0, 0, []
+        for policy in policies:
+            policy_id = policy.get("policy_id")
+            if not policy_id:
+                continue
+            try:
+                data = self._wazuh_get(f"/sca/{agent_id}/checks/{policy_id}",
+                                       params={"search": "Defender", "limit": 200})
+            except Exception as e:
+                logger.debug(f"Wazuh Defender checks for agent {agent_id}/{policy_id} unavailable: {e}")
+                continue
+            for c in (data.get("data") or {}).get("affected_items") or []:
+                title = str(c.get("title") or "")
+                if "defender" not in title.lower():
+                    continue
+                result = str(c.get("result") or "").lower()
+                if result == "passed":
+                    passed += 1
+                elif result == "failed":
+                    failed += 1
+                    gaps.append(title)
+        if passed + failed == 0:
+            return None
+        return {"passed": passed, "failed": failed, "gaps": gaps[:MAX_DEFENDER_POLICY_GAPS]}
 
     def _agent_profile(self, agent: dict, vulns: list[dict], severity_counts: dict | None,
                        inventory: dict | None) -> dict:
@@ -405,7 +538,10 @@ class WazuhAdapter(BaseConnector):
             "network": {"ip_addresses": ips},
         }
         for section, fields in (inventory or {}).items():
-            profile.setdefault(section, {}).update({k: v for k, v in fields.items() if v is not None})
+            profile.setdefault(section, {}).update({
+                k: v for k, v in fields.items()
+                if v is not None and k not in _INTERNAL_PROFILE_KEYS
+            })
         packages = group_vulnerable_packages(vulns)
         if packages:
             profile.setdefault("software", {})["vulnerable_packages"] = packages
@@ -492,12 +628,11 @@ class WazuhAdapter(BaseConnector):
         total = len(agents)
         active = sum(1 for a in agents if a.get("status") == "active")
         disconnected = total - active
-        score = round(active / total, 4) if total > 0 else 0.0
 
         inventory: dict[str, dict] = {}
         if self.config.get("collect_inventory", True):
             for a in agents[:MAX_AGENTS_PER_INVENTORY]:
-                inv = self._fetch_inventory(a.get("id"))
+                inv = self._fetch_inventory(a.get("id"), (a.get("os") or {}).get("platform"))
                 if inv is None and not inventory:
                     # Nothing at all came back for the first agent -- the
                     # manager doesn't expose syscollector; don't repeat
@@ -523,6 +658,39 @@ class WazuhAdapter(BaseConnector):
                 # never break agent connectivity itself.
                 logger.warning(f"Wazuh indexer vulnerability fetch failed, continuing without it: {e}")
 
+        # Score: a device counts as covered when its agent is reporting AND
+        # an antivirus/EDR process is running on it. Where the running
+        # processes couldn't be read (syscollector off or unavailable) the
+        # device falls back to "reporting" only -- the detail line says how
+        # many that applies to, so the number is never quietly overstated.
+        covered = 0
+        protected, unprotected, unchecked = 0, 0, 0
+        products: set[str] = set()
+        for a in agents:
+            if a.get("status") != "active":
+                continue
+            prot = (inventory.get(a.get("id")) or {}).get("protection") or {}
+            verified = prot.get("running")
+            if verified is True:
+                protected += 1
+                covered += 1
+                products.update(prot.get("running_products") or [])
+            elif verified is False:
+                unprotected += 1
+            else:
+                unchecked += 1
+                covered += 1
+        score = round(covered / total, 4) if total > 0 else 0.0
+
+        detail = f"{active} of {total} registered agents reporting"
+        if protected or unprotected:
+            detail += (f"; antivirus/EDR running on {protected} of {protected + unprotected} checked"
+                       + (f" ({', '.join(sorted(products))})" if products else ""))
+        if unchecked and (protected or unprotected):
+            detail += f"; {unchecked} couldn't be checked for antivirus (counted as reporting only)"
+        elif unchecked:
+            detail += " (running processes unavailable, so antivirus wasn't checked)"
+
         discovered_assets = []
         for a in agents:
             asset = self._agent_to_asset(a)
@@ -546,9 +714,9 @@ class WazuhAdapter(BaseConnector):
                 CheckStatus.FAIL
             ),
             score=score,
-            affected_count=disconnected,
+            affected_count=total - covered,
             total_count=total,
-            detail=f"{disconnected} of {total} registered agents are disconnected or never connected",
+            detail=detail,
             control_title=self._control_title("wazuh_agent_connectivity"),
         )
 
@@ -631,3 +799,69 @@ class WazuhAdapter(BaseConnector):
             ),
             control_title=self._control_title("wazuh_sca_compliance"),
         )
+
+
+def detect_protection(process_names: set[str] | None, package_names: list[str] | None,
+                      defender_policy: dict | None = None) -> dict | None:
+    """
+    What endpoint protection is present on one device, as the profile's
+    "protection" section. Pure function over data syscollector already
+    returns, so it's easy to test and reason about.
+
+    ``running`` / ``running_products`` are internal markers for the EDR
+    check (True: a protection process is running; False: processes were
+    read and none is; absent: processes unknown). _agent_profile leaves
+    them out of the stored profile -- they're never shown on the page.
+
+    Returns None when there's no evidence either way (nothing could be read).
+    """
+    if process_names is None and package_names is None and defender_policy is None:
+        return None
+
+    running: dict[str, tuple[str, str]] = {}
+    for proc in sorted(process_names or ()):
+        hit = PROTECTION_PROCESSES.get(proc)
+        if hit and hit[0] not in running:
+            running[hit[0]] = (hit[1], proc)
+
+    installed: list[str] = []
+    for pkg in package_names or ():
+        for pattern, product in PROTECTION_PACKAGES:
+            if re.search(pattern, pkg, re.IGNORECASE):
+                if product not in running and product not in installed:
+                    installed.append(product)
+                break
+
+    detected = [f"{product} ({kind}) — running ({proc})" for product, (kind, proc) in running.items()]
+    detected += [
+        f"{product} — installed, not seen running" if process_names is not None
+        else f"{product} — installed (couldn't check whether it's running)"
+        for product in installed
+    ]
+
+    if running:
+        status = "Active"
+    elif installed:
+        status = "Installed, not seen running" if process_names is not None else "Installed"
+    elif process_names is not None:
+        status = "Not detected"
+    else:
+        status = None
+
+    section: dict = {}
+    if status:
+        section["status"] = status
+    if running or installed:
+        section["product"] = ", ".join(list(running) + installed)
+    if detected:
+        section["detected"] = detected
+    if defender_policy:
+        checked = defender_policy["passed"] + defender_policy["failed"]
+        section["policy"] = (f"Microsoft Defender settings: {defender_policy['passed']} of {checked} "
+                             "CIS benchmark checks pass")
+        if defender_policy.get("gaps"):
+            section["policy_gaps"] = list(defender_policy["gaps"])
+    if process_names is not None:
+        section["running"] = bool(running)
+        section["running_products"] = list(running)
+    return section or None

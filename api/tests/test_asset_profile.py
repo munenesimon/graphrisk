@@ -322,7 +322,10 @@ def test_profile_endpoint_merges_and_orders_fix_first_by_ransomware(client, fake
     assert body["vulnerabilities"]["total"] == 3
     # Capabilities say which connectors could fill each section.
     assert "Wazuh" in body["capabilities"]["hardware"]
-    assert "Wazuh" not in body["capabilities"]["protection"]
+    # Wazuh detects antivirus/EDR from running processes and installed
+    # software, so it can fill "protection" too; it can't fill "ownership".
+    assert "Wazuh" in body["capabilities"]["protection"]
+    assert "Wazuh" not in body["capabilities"]["ownership"]
 
 
 def test_profile_endpoint_hides_sensitive_fields_from_non_admins(client, fake_graph, as_user):

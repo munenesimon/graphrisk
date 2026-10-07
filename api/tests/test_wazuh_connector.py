@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 import responses
 
-from app.connectors.adapters.wazuh import WazuhAdapter, MAX_VULNERABILITIES_PER_RUN
+from app.connectors.adapters.wazuh import WazuhAdapter, MAX_VULNERABILITIES_PER_RUN, detect_protection
 from app.connectors.base import UnsafeURLError
 from app.connectors.models import CheckStatus
 
@@ -347,3 +347,96 @@ def test_sca_counts_only_applicable_checks_and_match_the_device_page():
     assert sca.score == round(115 / 417, 4)
     assert "302 of 417 applicable SCA checks failing" in sca.detail
     assert "(7 not applicable)" in sca.detail
+
+
+
+# ── Endpoint protection detection ────────────────────────────────────────────
+
+def test_detect_protection_reports_running_and_installed_products_separately():
+    section = detect_protection(
+        {"msmpeng.exe", "explorer.exe", "wazuh-agent.exe"},
+        ["WinRAR 7.11", "Malwarebytes version 4.6", "Reset Tool", "Preset Manager"],
+        {"passed": 6, "failed": 3, "gaps": ["Ensure 'Turn on behavior monitoring' is set to 'Enabled'"]},
+    )
+    assert section["status"] == "Active"
+    assert section["product"] == "Microsoft Defender Antivirus, Malwarebytes"
+    assert section["detected"] == [
+        "Microsoft Defender Antivirus (Antivirus) — running (msmpeng.exe)",
+        "Malwarebytes — installed, not seen running",
+    ]
+    # "Reset"/"Preset" must not read as ESET -- whole-word matching.
+    assert "ESET" not in section["product"]
+    assert section["policy"] == "Microsoft Defender settings: 6 of 9 CIS benchmark checks pass"
+    assert section["policy_gaps"] == ["Ensure 'Turn on behavior monitoring' is set to 'Enabled'"]
+    assert section["running"] is True
+
+
+def test_detect_protection_distinguishes_none_found_from_unknown():
+    # Processes were read and nothing protective is running.
+    assert detect_protection({"explorer.exe"}, ["AVG Driver Updater"]) == {
+        "status": "Not detected", "running": False, "running_products": [],
+    }
+    # Processes couldn't be read: an installed product is reported, but we
+    # don't claim to know whether it runs -- and there's no "running" marker.
+    section = detect_protection(None, ["ESET Security"])
+    assert section["status"] == "Installed"
+    assert "running" not in section
+    # No evidence at all.
+    assert detect_protection(None, None) is None
+
+
+def _register_single_windows_agent(processes):
+    responses.add(responses.POST, f"{BASE_URL}/security/user/authenticate",
+                  json={"data": {"token": "fake-wazuh-jwt"}}, status=200)
+    responses.add(responses.GET, f"{BASE_URL}/agents", json={"data": {"affected_items": [
+        {"id": "001", "status": "active", "name": "Simo", "os": {"platform": "windows"}},
+    ]}}, status=200)
+    sc = f"{BASE_URL}/syscollector/001"
+    responses.add(responses.GET, f"{sc}/processes", json={"data": {
+        "affected_items": [{"name": n} for n in processes], "total_affected_items": len(processes)}})
+    responses.add(responses.GET, f"{sc}/packages", json={"data": {
+        "affected_items": [{"name": "Malwarebytes version 4.6"}], "total_affected_items": 1}})
+    responses.add(responses.GET, f"{BASE_URL}/sca/001", json={"data": {"affected_items": [
+        {"policy_id": "cis_win10_enterprise"}]}})
+    responses.add(responses.GET, f"{BASE_URL}/sca/001/checks/cis_win10_enterprise", json={"data": {"affected_items": [
+        {"title": "Ensure 'Turn off Microsoft Defender AntiVirus' is set to 'Disabled'", "result": "passed"},
+        {"title": "Ensure 'Turn on behavior monitoring' (Microsoft Defender) is set to 'Enabled'", "result": "failed"},
+        {"title": "Ensure 'Account lockout threshold' is set", "result": "failed"},
+    ]}})
+
+
+@responses.activate
+def test_edr_check_counts_a_reporting_agent_with_antivirus_running_as_covered():
+    with _mock_private_dns():
+        _register_single_windows_agent(["MsMpEng.exe", "explorer.exe"])
+        result = WazuhAdapter(tenant_id="t", config={
+            "api_url": BASE_URL, "username": "u", "password": "p", "verify_ssl": False,
+        }).run_check("wazuh_agent_connectivity")
+
+    assert result.score == 1.0
+    assert result.status == CheckStatus.PASS
+    assert "antivirus/EDR running on 1 of 1 checked (Microsoft Defender Antivirus)" in result.detail
+    protection = result.discovered_assets[0]["profile"]["protection"]
+    assert protection["status"] == "Active"
+    assert protection["policy"] == "Microsoft Defender settings: 1 of 2 CIS benchmark checks pass"
+    assert protection["policy_gaps"] == ["Ensure 'Turn on behavior monitoring' (Microsoft Defender) is set to 'Enabled'"]
+    # The EDR check's internal markers never reach the stored profile.
+    assert "running" not in protection and "running_products" not in protection
+
+
+@responses.activate
+def test_edr_check_does_not_count_a_reporting_agent_without_antivirus():
+    with _mock_private_dns():
+        _register_single_windows_agent(["explorer.exe", "wazuh-agent.exe"])
+        result = WazuhAdapter(tenant_id="t", config={
+            "api_url": BASE_URL, "username": "u", "password": "p", "verify_ssl": False,
+        }).run_check("wazuh_agent_connectivity")
+
+    # Reporting, but nothing protective running: not covered.
+    assert result.score == 0.0
+    assert result.status == CheckStatus.FAIL
+    assert result.affected_count == 1
+    assert "antivirus/EDR running on 0 of 1 checked" in result.detail
+    protection = result.discovered_assets[0]["profile"]["protection"]
+    assert protection["status"] == "Installed, not seen running"
+    assert protection["detected"] == ["Malwarebytes — installed, not seen running"]
