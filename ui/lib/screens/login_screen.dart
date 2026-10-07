@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../constants/colors.dart';
 import '../services/api_service.dart';
+import '../widgets/motion.dart';
 
 /// Entry point for the app. Shows the login form; on success, hands off to
 /// [onAuthenticated] so the caller (main.dart) can swap in the dashboard.
@@ -34,6 +36,9 @@ class _LoginScreenState extends State<LoginScreen> {
   late bool _isRegisterMode = widget.initialRegisterMode;
   bool _isLoading = false;
   String? _errorMessage;
+  // Shown when a login is taking long enough that the server must be waking.
+  bool _slow = false;
+  Timer? _slowTimer;
 
   @override
   void initState() {
@@ -45,6 +50,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   void dispose() {
+    _slowTimer?.cancel();
     _emailController.dispose();
     _passwordController.dispose();
     _tenantNameController.dispose();
@@ -56,6 +62,11 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
+      _slow = false;
+    });
+    _slowTimer?.cancel();
+    _slowTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted && _isLoading) setState(() => _slow = true);
     });
 
     try {
@@ -78,7 +89,8 @@ class _LoginScreenState extends State<LoginScreen> {
         _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      _slowTimer?.cancel();
+      if (mounted) setState(() { _isLoading = false; _slow = false; });
     }
   }
 
@@ -229,6 +241,17 @@ class _LoginScreenState extends State<LoginScreen> {
                         style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
                       ),
               ),
+            ),
+            AnimatedSize(
+              duration: Motion.medium,
+              curve: Motion.curve,
+              alignment: Alignment.topCenter,
+              child: _slow
+                  ? const Padding(
+                      padding: EdgeInsets.only(top: 14),
+                      child: FadeSlideIn(child: WakingNote()),
+                    )
+                  : const SizedBox(width: double.infinity),
             ),
           ],
         ),

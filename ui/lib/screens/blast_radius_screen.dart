@@ -4,6 +4,7 @@ import '../constants/colors.dart';
 import '../constants/frameworks.dart';
 import '../models/dashboard.dart';
 import '../services/api_service.dart';
+import '../widgets/motion.dart';
 import '../widgets/regulatory_obligations_card.dart';
 import '../widgets/blast_radius_graph.dart';
 
@@ -135,6 +136,13 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
         _result = r;
         _loading = false;
       });
+
+      if (Motion.reduced(context)) {
+        for (final c in _layerControllers) {
+          c.value = 1;
+        }
+        return;
+      }
 
       // Pulse the trigger node briefly
       _pulseCtrl.repeat(reverse: true);
@@ -334,6 +342,10 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
         // ── Error state ──────────────────────────────────────────────────────
         if (_error != null) _ErrorCard(message: _error!),
 
+        // ── Loading: the cascade's shape, so the result slots into place ────
+        if (_loading && _result == null && _error == null)
+          const PageSkeleton(layout: SkeletonLayout.cascade, standalone: false),
+
         // ── Graph visualization (same _result, radial node/edge view) ─────────
         if (_result != null && _view == 'graph') ...[
           Container(
@@ -365,7 +377,7 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
           const SizedBox(height: 8),
 
           // Cascade connector
-          _CascadeConnector(),
+          _CascadeConnector(progress: _layerFades[0]),
 
           // Layer 0: Risks
           _CascadeLayer(
@@ -384,7 +396,7 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
             ),
           ),
 
-          _CascadeConnector(),
+          _CascadeConnector(progress: _layerFades[1]),
 
           // Layer 1: Assets
           _CascadeLayer(
@@ -403,7 +415,7 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
             ),
           ),
 
-          _CascadeConnector(),
+          _CascadeConnector(progress: _layerFades[2]),
 
           // Layer 2: Compliance gaps -- grouped into your regulations,
           // voluntary standards, and (scope=all only) regulations you
@@ -428,7 +440,7 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
             ),
           ),
 
-          _CascadeConnector(),
+          _CascadeConnector(progress: _layerFades[3]),
 
           // Layer 3: Framework controls
           _CascadeLayer(
@@ -445,7 +457,7 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
             ),
           ),
 
-          _CascadeConnector(),
+          _CascadeConnector(progress: _layerFades[4]),
 
           // Layer 4: Regulatory requirements reached via GraphRisk's
           // curated crosswalk (e.g. this control also satisfies Kenya DPA
@@ -464,7 +476,7 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
             ),
           ),
 
-          _CascadeConnector(),
+          _CascadeConnector(progress: _layerFades[5]),
 
           // Layer 5: Regulatory notification clocks
           _CascadeLayer(
@@ -582,20 +594,14 @@ class _TriggerNode extends StatelessWidget {
                       fontWeight: FontWeight.bold)),
             ]),
             const SizedBox(height: 6),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: result.effectivenessScore,
-                minHeight: 6,
-                backgroundColor: kSurface2,
-                valueColor: AlwaysStoppedAnimation(
-                  result.effectivenessScore >= 0.8
-                      ? kGreen
-                      : result.effectivenessScore >= 0.5
-                          ? kOrange
-                          : kRed,
-                ),
-              ),
+            AnimatedBar(
+              key: ValueKey(result.controlTitle),
+              value: result.effectivenessScore,
+              color: result.effectivenessScore >= 0.8
+                  ? kGreen
+                  : result.effectivenessScore >= 0.5
+                      ? kOrange
+                      : kRed,
             ),
           ]),
         ]),
@@ -606,45 +612,54 @@ class _TriggerNode extends StatelessWidget {
 // ── Cascade connector ─────────────────────────────────────────────────────────
 
 class _CascadeConnector extends StatelessWidget {
+  /// The animation of the layer this arrow leads into. The line draws
+  /// downward over the first half of it, so the cascade visibly flows from
+  /// one layer into the next.
+  final Animation<double> progress;
+  const _CascadeConnector({required this.progress});
+
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(left: 29),
       child: SizedBox(
         height: 24,
-        child: CustomPaint(painter: _ConnectorPainter()),
+        child: CustomPaint(painter: _ConnectorPainter(progress)),
       ),
     );
   }
 }
 
 class _ConnectorPainter extends CustomPainter {
+  final Animation<double> progress;
+  _ConnectorPainter(this.progress) : super(repaint: progress);
+
   @override
   void paint(Canvas canvas, Size size) {
+    // 0 -> 1 over the first 60% of the layer's animation.
+    final t = (progress.value / 0.6).clamp(0.0, 1.0);
+    if (t <= 0) return;
     final paint = Paint()
       ..color = kAccent.withOpacity(0.3)
       ..strokeWidth = 1.5
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
-    final path = Path()
-      ..moveTo(0, 0)
-      ..lineTo(0, size.height);
-    canvas.drawPath(path, paint);
+    final end = size.height * t;
+    canvas.drawLine(Offset.zero, Offset(0, end), paint);
 
-    // Arrow head
+    // Arrow head, once the line has nearly arrived.
+    if (t < 0.85) return;
     final arrowPaint = Paint()
-      ..color = kAccent.withOpacity(0.5)
+      ..color = kAccent.withOpacity(0.5 * ((t - 0.85) / 0.15))
       ..strokeWidth = 1.5
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
-    canvas.drawLine(
-        Offset(0, size.height), Offset(-5, size.height - 7), arrowPaint);
-    canvas.drawLine(
-        Offset(0, size.height), Offset(5, size.height - 7), arrowPaint);
+    canvas.drawLine(Offset(0, end), Offset(-5, end - 7), arrowPaint);
+    canvas.drawLine(Offset(0, end), Offset(5, end - 7), arrowPaint);
   }
 
   @override
-  bool shouldRepaint(_) => false;
+  bool shouldRepaint(_ConnectorPainter old) => old.progress != progress;
 }
 
 // ── Cascade layer wrapper (animated) ─────────────────────────────────────────
@@ -726,27 +741,34 @@ class _ExpandableSectionState extends State<_ExpandableSection> {
                               fontSize: 11)),
                     ]),
               ),
-              Icon(
-                _expanded ? Icons.expand_less : Icons.expand_more,
-                color: Colors.white38,
-                size: 20,
+              AnimatedRotation(
+                turns: _expanded ? 0.5 : 0,
+                duration: Motion.fast,
+                child: const Icon(Icons.expand_more, color: Colors.white38, size: 20),
               ),
             ]),
           ),
         ),
-        if (_expanded) ...[
-          Divider(height: 1, color: widget.color.withOpacity(0.15)),
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-                children: widget.items
-                    .map((item) => Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: item,
-                        ))
-                    .toList()),
-          ),
-        ],
+        AnimatedSize(
+          duration: Motion.medium,
+          curve: Motion.curve,
+          alignment: Alignment.topCenter,
+          child: !_expanded
+              ? const SizedBox(width: double.infinity)
+              : Column(children: [
+                  Divider(height: 1, color: widget.color.withOpacity(0.15)),
+                  Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                        children: widget.items
+                            .map((item) => Padding(
+                                  padding: const EdgeInsets.only(bottom: 6),
+                                  child: item,
+                                ))
+                            .toList()),
+                  ),
+                ]),
+        ),
       ]),
     );
   }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../constants/colors.dart';
 import '../constants/connectors.dart';
 import '../services/api_service.dart';
+import '../widgets/motion.dart';
 
 /// Lets a tenant see every connector adapter registered in this GraphRisk
 /// deployment (the "Universal Connector Architecture" from the README),
@@ -189,7 +190,7 @@ class _ConnectorsScreenState extends State<ConnectorsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator(color: kAccent));
+    if (_loading) return const PageSkeleton();
     if (_error != null) {
       return Center(
         child: Padding(

@@ -1,6 +1,7 @@
 
 import 'package:flutter/material.dart';
 import '../constants/colors.dart';
+import 'motion.dart';
 
 class StatCard extends StatelessWidget {
   final String  label;
@@ -39,7 +40,7 @@ class StatCard extends StatelessWidget {
             Text(label, style: TextStyle(color: Colors.white60, fontSize: 13)),
           ]),
           const SizedBox(height: 12),
-          Text(value, style: TextStyle(color: color, fontSize: 28, fontWeight: FontWeight.bold)),
+          CountUpText(value, style: TextStyle(color: color, fontSize: 28, fontWeight: FontWeight.bold)),
           if (subtitle != null) ...[
             const SizedBox(height: 4),
             Text(subtitle!, style: const TextStyle(color: Colors.white38, fontSize: 12)),

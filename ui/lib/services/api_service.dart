@@ -202,6 +202,22 @@ class ApiService {
   }
 
   // ── Auth ────────────────────────────────────────────────────────────────
+  /// Nudge the backend awake without waiting for the answer.
+  ///
+  /// The API runs on Render's free tier, which sleeps after 15 minutes
+  /// without traffic and takes about a minute to start again. Calling this
+  /// as soon as the app opens means the server is already starting while
+  /// the visitor reads the login page. `/health` doesn't touch the database
+  /// and needs no API key, so it costs next to nothing, and it only runs
+  /// once per page load.
+  static bool _wakeSent = false;
+  static void wakeBackend() {
+    if (_wakeSent) return;
+    _wakeSent = true;
+    final health = Uri.parse(_base).replace(path: '/health', query: null);
+    _client.get(health).timeout(const Duration(seconds: 90)).then((_) {}, onError: (_) {});
+  }
+
   static Future<void> login(String email, String password) async {
     final data = await _post('/auth/login', {'email': email, 'password': password});
     _applySession(data);

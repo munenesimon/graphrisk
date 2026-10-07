@@ -18,6 +18,7 @@ void main() {
   // resolved, so a reload or a Back/Forward into the app lands on the
   // screen in the URL rather than on the login screen.
   ApiService.restoreSession();
+  ApiService.wakeBackend();
   ApiService.onSessionExpired = _auth.expired;
   runApp(const GraphRiskApp());
 }

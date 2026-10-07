@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../constants/colors.dart';
 import '../services/api_service.dart';
+import '../widgets/motion.dart';
 
 /// Drill-down from FrameworksScreen's "All Frameworks" list: every
 /// requirement (FrameworkControl) in one framework, split into covered
@@ -53,7 +54,7 @@ class _FrameworkDetailScreenState extends State<FrameworkDetailScreen> {
         title: Text(widget.frameworkName, style: const TextStyle(color: Colors.white, fontSize: 18)),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: kAccent))
+          ? const PageSkeleton()
           : _error != null
               ? Center(child: Text('Error: $_error', style: const TextStyle(color: kRed)))
               : _buildBody(),

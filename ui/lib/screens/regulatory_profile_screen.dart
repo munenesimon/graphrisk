@@ -3,6 +3,7 @@ import '../constants/colors.dart';
 import '../constants/frameworks.dart';
 import '../models/dashboard.dart';
 import '../services/api_service.dart';
+import '../widgets/motion.dart';
 
 /// Lets an organisation declare which regulations it's legally subject to
 /// (plus any qualifiers, e.g. "we're a payment service provider"). This is
@@ -88,7 +89,7 @@ class _RegulatoryProfileScreenState extends State<RegulatoryProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator(color: kAccent));
+    if (_loading) return const PageSkeleton();
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),

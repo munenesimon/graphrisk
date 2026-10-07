@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../constants/colors.dart';
 import '../services/api_service.dart';
 import 'package:go_router/go_router.dart';
+import '../widgets/motion.dart';
 
 class FrameworksScreen extends StatefulWidget {
   const FrameworksScreen({super.key});
@@ -33,7 +34,7 @@ class _FrameworksScreenState extends State<FrameworksScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator(color: kAccent));
+    if (_loading) return const PageSkeleton();
     final frameworks   = _frameworks ?? [];
     final coverageList = (_coverage?['frameworks'] as List? ?? []);
     // The coverage-overview rows only carry a framework name (the

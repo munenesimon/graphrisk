@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import '../constants/colors.dart';
 import '../models/dashboard.dart';
 import '../services/api_service.dart';
+import '../widgets/motion.dart';
 
 /// Lists the tenant's assets and lets an owner/admin flag which ones hold
 /// personal data. That flag is what turns on data-protection breach-notice
@@ -86,7 +87,7 @@ class _AssetsScreenState extends State<AssetsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator(color: kAccent));
+    if (_loading) return const PageSkeleton();
     if (_error != null) {
       return Center(
         child: Padding(
@@ -143,11 +144,12 @@ class _AssetsScreenState extends State<AssetsScreen> {
             child: Text('No assets found for this tenant.', style: TextStyle(color: Colors.white38, fontSize: 13)),
           )
         else
-          ...assets.map((a) {
+          ...assets.indexed.map((e) {
+            final (i, a) = e;
             final busy = _pending.contains(a.id);
             // Tapping a row opens the asset page -- everything its
             // connectors report about the device (see AssetDetailScreen).
-            return InkWell(
+            return staggerIn(i, InkWell(
               borderRadius: BorderRadius.circular(10),
               onTap: () => context.go('/assets/${a.id}?name=${Uri.encodeQueryComponent(a.name)}'),
               child: Container(
@@ -172,7 +174,11 @@ class _AssetsScreenState extends State<AssetsScreen> {
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(a.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    HeroText(
+                      tag: 'asset-name-${a.id}',
+                      text: a.name,
+                      style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                    ),
                     const SizedBox(height: 2),
                     Text(
                       [a.assetType, a.criticality, a.environment].where((s) => s.isNotEmpty).join(' · '),
@@ -210,7 +216,7 @@ class _AssetsScreenState extends State<AssetsScreen> {
                 const Icon(Icons.chevron_right, color: Colors.white24, size: 20),
               ]),
               ),
-            );
+            ));
           }),
       ]),
     );

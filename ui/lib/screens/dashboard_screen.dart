@@ -5,6 +5,7 @@ import '../services/api_service.dart';
 import '../widgets/stat_card.dart';
 import '../widgets/risk_row.dart';
 import '../widgets/section_header.dart';
+import '../widgets/motion.dart';
 
 class DashboardScreen extends StatefulWidget {
   /// Called with the NavigationRail index to switch to when a drillable
@@ -45,7 +46,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator(color: kAccent));
+    if (_loading) return const PageSkeleton(layout: SkeletonLayout.dashboard);
     if (_error != null) return Center(child: Text('Error: ' + _error!, style: const TextStyle(color: kRed)));
 
     final s = _summary!;
@@ -87,25 +88,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
             final cols = constraints.maxWidth > 800 ? 4 : constraints.maxWidth > 500 ? 2 : 1;
             final w = (constraints.maxWidth - (cols - 1) * 16) / cols;
             return Wrap(spacing: 16, runSpacing: 16, children: [
-              SizedBox(width: w, child: StatCard(label: 'Open Risks', value: s.openRisks.toString(),
+              staggerIn(0, SizedBox(width: w, child: StatCard(label: 'Open Risks', value: s.openRisks.toString(),
                   subtitle: 'Avg score: ' + s.avgScore.toString(), color: kRed, icon: Icons.warning_amber_rounded,
-                  onTap: widget.onNavigate == null ? null : () => widget.onNavigate!(1))),
-              SizedBox(width: w, child: StatCard(label: 'Controls', value: s.implementedControls.toString() + '/' + s.totalControls.toString(),
+                  onTap: widget.onNavigate == null ? null : () => widget.onNavigate!(1)))),
+              staggerIn(1, SizedBox(width: w, child: StatCard(label: 'Controls', value: s.implementedControls.toString() + '/' + s.totalControls.toString(),
                   subtitle: controlPct + '% implemented', color: kGreen, icon: Icons.shield_outlined,
-                  onTap: widget.onNavigate == null ? null : () => widget.onNavigate!(2))),
-              SizedBox(width: w, child: StatCard(label: 'Assets', value: s.totalAssets.toString(),
+                  onTap: widget.onNavigate == null ? null : () => widget.onNavigate!(2)))),
+              staggerIn(2, SizedBox(width: w, child: StatCard(label: 'Assets', value: s.totalAssets.toString(),
                   subtitle: 'Monitored', color: kAccent, icon: Icons.devices_outlined,
-                  onTap: widget.onNavigate == null ? null : () => widget.onNavigate!(4))),
-              SizedBox(width: w, child: StatCard(label: 'Graph Nodes', value: g.totalNodes.toString(),
-                  subtitle: g.totalEdges.toString() + ' relationships', color: kPurple, icon: Icons.hub_outlined)),
+                  onTap: widget.onNavigate == null ? null : () => widget.onNavigate!(4)))),
+              staggerIn(3, SizedBox(width: w, child: StatCard(label: 'Graph Nodes', value: g.totalNodes.toString(),
+                  subtitle: g.totalEdges.toString() + ' relationships', color: kPurple, icon: Icons.hub_outlined))),
             ]);
           }),
           const SizedBox(height: 32),
           const SectionHeader(title: 'Top Risks by Score'),
-          ...s.topRisks.map((r) => RiskRow(
-            title: r.title, score: r.riskScore,
-            likelihood: r.likelihood, impact: r.impact,
-          )),
+          ...s.topRisks.indexed.map((e) => staggerIn(e.$1, RiskRow(
+            title: e.$2.title, score: e.$2.riskScore,
+            likelihood: e.$2.likelihood, impact: e.$2.impact,
+          ), start: const Duration(milliseconds: 220))),
           const SizedBox(height: 32),
           const SectionHeader(title: 'Graph Node Breakdown'),
           Container(
@@ -127,14 +128,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     Text(count.toString(), style: TextStyle(color: colors[idx], fontWeight: FontWeight.bold)),
                   ]),
                   const SizedBox(height: 6),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(
-                      value: pct, minHeight: 6,
-                      backgroundColor: kSurface2,
-                      valueColor: AlwaysStoppedAnimation(colors[idx]),
-                    ),
-                  ),
+                  AnimatedBar(value: pct, color: colors[idx]),
                 ]),
               );
             }).toList()),
