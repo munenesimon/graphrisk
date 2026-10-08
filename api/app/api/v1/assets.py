@@ -125,6 +125,16 @@ async def get_asset_profile(asset_id: str, user: CurrentUser = Depends(get_curre
         -_num(v.get("cvss_score")),
     ))
 
+    # Each risk's current score and verdict against the risk appetite, then
+    # the device's recommended actions -- worked out now from what the
+    # connectors last reported, so a newly discovered device gets them on
+    # its first run and they change as soon as the evidence does.
+    from app.api.v1.organisation import read_risk_appetite
+    from app.recommendations import assess_asset_risks, recommend_for_asset
+    appetite, _ = read_risk_appetite(tenant_id)
+    risks = assess_asset_risks([r for r in (detail.get("risks") or []) if r and r.get("id")], appetite)
+    fix_first = _fix_first(packages, vulns_by_id)
+
     # Matching identifiers live on the asset node for CheckRegistry's use;
     # the profile already shows them (masked where needed), so never echo
     # the raw lists here.
@@ -144,7 +154,9 @@ async def get_asset_profile(asset_id: str, user: CurrentUser = Depends(get_curre
             section: [c["name"] for c in caps.values() if section in c["sections"]]
             for section in SECTIONS
         },
-        "fix_first": _fix_first(packages, vulns_by_id),
+        "fix_first": fix_first,
+        "recommendations": recommend_for_asset(profile, fix_first, risks),
+        "risk_appetite": appetite,
         "vulnerabilities": {
             "total": len(vulns),
             "items": [
@@ -152,7 +164,7 @@ async def get_asset_profile(asset_id: str, user: CurrentUser = Depends(get_curre
                 for v in vulns[:MAX_VULNERABILITIES_SHOWN]
             ],
         },
-        "risks": [r for r in (detail.get("risks") or []) if r and r.get("id")],
+        "risks": risks,
     }
 
 

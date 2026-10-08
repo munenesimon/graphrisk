@@ -67,11 +67,14 @@ logger = logging.getLogger(__name__)
 SUPPORTED_CHECKS = [
     "wazuh_agent_connectivity",
     "wazuh_sca_compliance",
+    # Only runs when the indexer is configured -- see supported_checks().
+    "wazuh_vulnerability_patching",
 ]
 
 DEFAULT_CONTROL_TITLES = {
     "wazuh_agent_connectivity": "Endpoint Detection & Response",
     "wazuh_sca_compliance":     "Secure Configuration Baseline",
+    "wazuh_vulnerability_patching": "Vulnerability & Patch Management",
 }
 
 # SCA compliance pulls one request per active agent; cap how many we walk
@@ -577,13 +580,19 @@ class WazuhAdapter(BaseConnector):
         return self.config.get("control_titles", {}).get(check_id, DEFAULT_CONTROL_TITLES[check_id])
 
     def supported_checks(self) -> list[str]:
-        return SUPPORTED_CHECKS
+        # The patching check needs the indexer's vulnerability data; without
+        # it there's nothing to measure, and running it would write a
+        # misleading 0% to the patch-management control.
+        if self._effective_indexer_url():
+            return list(SUPPORTED_CHECKS)
+        return [c for c in SUPPORTED_CHECKS if c != "wazuh_vulnerability_patching"]
 
     def run_check(self, check_id: str) -> CheckResult:
         self._ensure_token()
         dispatch = {
             "wazuh_agent_connectivity": self._check_agent_connectivity,
             "wazuh_sca_compliance":     self._check_sca_compliance,
+            "wazuh_vulnerability_patching": self._check_vulnerability_patching,
         }
         if check_id not in dispatch:
             raise ValueError(f"Unknown check for WazuhAdapter: {check_id}")
@@ -718,6 +727,52 @@ class WazuhAdapter(BaseConnector):
             total_count=total,
             detail=detail,
             control_title=self._control_title("wazuh_agent_connectivity"),
+        )
+
+    def _check_vulnerability_patching(self) -> CheckResult:
+        """
+        Patch management, measured: the share of scanned devices with no
+        open Critical or High vulnerability findings, from the indexer's
+        per-device severity counts. Feeds "Vulnerability & Patch
+        Management", so patching (and re-scanning) visibly lowers every risk
+        that control mitigates. Raises rather than scoring 0 when there's no
+        scan data at all, so a missing scan never reads as "unpatched".
+        """
+        if not self._effective_indexer_url():
+            raise RuntimeError("Vulnerability patching needs the Wazuh indexer configured")
+        data = self._wazuh_get("/agents", params={"limit": 500, "status": "active"})
+        agents = [a for a in data.get("data", {}).get("affected_items", []) if a.get("id") != "000"]
+        counts = self._fetch_severity_counts([a.get("id") for a in agents]) if agents else {}
+        scanned = [a for a in agents if a.get("id") in counts]
+        if not scanned:
+            raise RuntimeError("No vulnerability scan results in the indexer for any active agent yet")
+
+        def serious(agent_id: str) -> int:
+            sev = counts.get(agent_id) or {}
+            return int(sev.get("Critical", 0)) + int(sev.get("High", 0))
+
+        clean = sum(1 for a in scanned if serious(a.get("id")) == 0)
+        total = len(scanned)
+        critical = sum(int((counts.get(a.get("id")) or {}).get("Critical", 0)) for a in scanned)
+        high = sum(int((counts.get(a.get("id")) or {}).get("High", 0)) for a in scanned)
+        score = round(clean / total, 4)
+        return CheckResult(
+            check_id="wazuh_vulnerability_patching",
+            check_name="Wazuh Vulnerability Patching",
+            category=CheckCategory.ENDPOINT,
+            source=self.CONNECTOR_ID,
+            tenant_id=self.tenant_id,
+            status=(
+                CheckStatus.PASS if score >= 0.95 else
+                CheckStatus.WARNING if score >= 0.80 else
+                CheckStatus.FAIL
+            ),
+            score=score,
+            affected_count=total - clean,
+            total_count=total,
+            detail=(f"{clean} of {total} scanned device{'s' if total != 1 else ''} have no open Critical "
+                    f"or High vulnerabilities ({critical} critical and {high} high findings open in total)"),
+            control_title=self._control_title("wazuh_vulnerability_patching"),
         )
 
     def _check_sca_compliance(self) -> CheckResult:

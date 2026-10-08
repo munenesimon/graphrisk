@@ -85,10 +85,10 @@ GET_ASSET_PROFILE_SECTIONS = """
 GET_ASSET_DETAIL = """
     MATCH (a:Asset {id: $asset_id, tenant_id: $tenant_id})
     OPTIONAL MATCH (r:Risk)-[i:IMPACTS]->(a)
-    OPTIONAL MATCH (c:Control)-[:MITIGATES]->(r)
+    OPTIONAL MATCH (c:Control)-[m:MITIGATES]->(r)
     WITH a, r, i, collect(DISTINCT CASE WHEN c IS NULL THEN NULL ELSE
          {id: c.id, title: c.title, status: c.implementation_status,
-          effectiveness: c.effectiveness_score} END) AS controls
+          effectiveness: c.effectiveness_score, strength: m.effectiveness} END) AS controls
     WITH a, collect(CASE WHEN r IS NULL THEN NULL ELSE
          {id: r.id, title: r.title, risk_score: r.risk_score,
           likelihood: r.likelihood, impact: r.impact,

@@ -18,6 +18,12 @@ class AssetProfile {
   final List<String> alsoKnownAs;
   /// Assets that only share a hostname -- flagged, not merged: {id, name, reason}.
   final List<Map<String, dynamic>> possibleDuplicates;
+  /// Ranked actions worked out from what the connectors last reported --
+  /// see the API's app/recommendations.py. Each: priority, category, title,
+  /// detail, steps, source, helps {control, risks}.
+  final List<Map<String, dynamic>> recommendations;
+  /// The organisation's risk appetite the verdicts were judged against.
+  final double riskAppetite;
 
   AssetProfile({
     required this.asset,
@@ -31,6 +37,8 @@ class AssetProfile {
     required this.risks,
     this.alsoKnownAs = const [],
     this.possibleDuplicates = const [],
+    this.recommendations = const [],
+    this.riskAppetite = 4,
   });
 
   factory AssetProfile.fromJson(Map<String, dynamic> j) {
@@ -57,6 +65,11 @@ class AssetProfile {
       possibleDuplicates: ((j['possible_duplicates'] as List?) ?? [])
           .map((e) => (e as Map).cast<String, dynamic>())
           .toList(),
+      recommendations: ((j['recommendations'] as List?) ?? [])
+          .whereType<Map>()
+          .map((e) => e.cast<String, dynamic>())
+          .toList(),
+      riskAppetite: (j['risk_appetite'] as num?)?.toDouble() ?? 4,
     );
   }
 }

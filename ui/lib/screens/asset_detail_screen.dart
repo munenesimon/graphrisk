@@ -29,6 +29,7 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
   String? _error;
   bool _loading = true;
   bool _showAllVulns = false;
+  bool _showAllActions = false;
 
   @override
   void initState() {
@@ -167,6 +168,27 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
       ],
       const SizedBox(height: 20),
     ];
+
+    // ── Recommended actions ──
+    if (p.recommendations.isNotEmpty) {
+      final shown = _showAllActions ? p.recommendations : p.recommendations.take(5).toList();
+      final urgent = p.recommendations.where((a) => a['priority'] == 'critical' || a['priority'] == 'high').length;
+      widgets.add(_Card(
+        title: 'Recommended actions',
+        subtitle: '${p.recommendations.length} action${p.recommendations.length == 1 ? '' : 's'}'
+            '${urgent > 0 ? ' · $urgent urgent' : ''} · from what the connectors last reported',
+        icon: Icons.checklist_rtl,
+        color: kAccent,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          for (final a in shown) _ActionRow(action: a),
+          if (p.recommendations.length > 5)
+            TextButton(
+              onPressed: () => setState(() => _showAllActions = !_showAllActions),
+              child: Text(_showAllActions ? 'Show fewer' : 'Show all ${p.recommendations.length}'),
+            ),
+        ]),
+      ));
+    }
 
     // ── Fix first ──
     if (p.fixFirst.isNotEmpty) {
@@ -755,9 +777,12 @@ class _RiskRowState extends State<_RiskRow> {
 
   String _controlsLine(List<Map> controls) {
     if (controls.isEmpty) return 'No control is linked to this risk yet.';
+    String pct(dynamic v) => '${((v as num) * 100).round()}%';
     final parts = controls.map((c) {
-      final eff = c['effectiveness'] is num ? ' (${((c['effectiveness'] as num) * 100).round()}%)' : '';
-      return '${c['title']}$eff';
+      final health = c['effectiveness'] is num ? 'health ${pct(c['effectiveness'])}' : null;
+      final strength = c['strength'] is num ? 'strength ${pct(c['strength'])}' : null;
+      final detail = [health, strength].whereType<String>().join(', ');
+      return detail.isEmpty ? '${c['title']}' : '${c['title']} ($detail)';
     });
     return 'Covered by ${parts.join(', ')}';
   }
@@ -766,7 +791,8 @@ class _RiskRowState extends State<_RiskRow> {
   Widget build(BuildContext context) {
     final controls = ((risk['controls'] as List?) ?? const []).whereType<Map>().toList();
     final drivers = ((risk['driver_cves'] as List?) ?? const []).map((e) => e.toString()).toList();
-    final score = risk['risk_score'];
+    final score = risk['current_score'] ?? risk['risk_score'];
+    final assessment = risk['assessment'] is Map ? (risk['assessment'] as Map).cast<String, dynamic>() : null;
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.only(bottom: 10),
@@ -782,9 +808,19 @@ class _RiskRowState extends State<_RiskRow> {
             child: Text(risk['title']?.toString() ?? '',
                 style: const TextStyle(color: kRed, fontSize: 13, fontWeight: FontWeight.w600)),
           ),
+          if (assessment != null) ...[
+            _VerdictPill(status: assessment['status']?.toString() ?? '', label: assessment['label']?.toString() ?? ''),
+            const SizedBox(width: 8),
+          ],
           if (score is num)
-            Text('Score ${score.toStringAsFixed(1)}', style: const TextStyle(color: Colors.white54, fontSize: 11)),
+            Text('Score ${_scoreText(score)}', style: const TextStyle(color: Colors.white54, fontSize: 11)),
         ]),
+        if (assessment != null && assessment['status'] != 'adequate') ...[
+          const SizedBox(height: 4),
+          Text(assessment['reason']?.toString() ?? '', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+          if (assessment['fix'] != null)
+            Text(assessment['fix'].toString(), style: const TextStyle(color: Colors.white, fontSize: 12)),
+        ],
         if (drivers.isNotEmpty) ...[
           const SizedBox(height: 4),
           Text(
@@ -815,6 +851,107 @@ class _RiskRowState extends State<_RiskRow> {
         const SizedBox(height: 4),
         Text(_controlsLine(controls), style: const TextStyle(color: Colors.white54, fontSize: 12)),
       ]),
+    );
+  }
+}
+
+
+// ── Recommended actions ──────────────────────────────────────────────────────
+
+String _scoreText(num v) {
+  final t = v.toStringAsFixed(2);
+  return t.replaceFirst(RegExp(r'\.?0+$'), '');
+}
+
+Color _priorityColor(String p) => switch (p) {
+      'critical' => kRed,
+      'high' => kOrange,
+      'medium' => kAccent,
+      _ => Colors.white54,
+    };
+
+class _ActionRow extends StatelessWidget {
+  final Map<String, dynamic> action;
+  const _ActionRow({required this.action});
+
+  @override
+  Widget build(BuildContext context) {
+    final priority = action['priority']?.toString() ?? 'low';
+    final c = _priorityColor(priority);
+    final steps = ((action['steps'] as List?) ?? const []).map((e) => e.toString()).toList();
+    final helps = action['helps'] is Map ? (action['helps'] as Map).cast<String, dynamic>() : null;
+    final helpedRisks = ((helps?['risks'] as List?) ?? const []).map((e) => e.toString()).toList();
+    final source = action['source']?.toString();
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: c.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: c.withOpacity(0.25)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Container(
+            margin: const EdgeInsets.only(top: 1),
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            decoration: BoxDecoration(color: c.withOpacity(0.15), borderRadius: BorderRadius.circular(10)),
+            child: Text(priority[0].toUpperCase() + priority.substring(1),
+                style: TextStyle(color: c, fontSize: 10, fontWeight: FontWeight.w700)),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(action['title']?.toString() ?? '',
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+          ),
+        ]),
+        if ((action['detail']?.toString() ?? '').isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(action['detail'].toString(), style: const TextStyle(color: Colors.white70, fontSize: 12, height: 1.4)),
+        ],
+        for (final step in steps)
+          Padding(
+            padding: const EdgeInsets.only(top: 4, left: 4),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('•  ', style: TextStyle(color: Colors.white38, fontSize: 12)),
+              Expanded(child: Text(step, style: const TextStyle(color: Colors.white60, fontSize: 12, height: 1.4))),
+            ]),
+          ),
+        if (helps != null || source != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            [
+              if (helps != null && helpedRisks.isNotEmpty)
+                'Lowers ${helpedRisks.join(', ')} (via ${helps['control']})'
+              else if (helps != null)
+                'Strengthens ${helps['control']}',
+              if (source != null) 'From $source',
+            ].join(' · '),
+            style: const TextStyle(color: Colors.white38, fontSize: 11),
+          ),
+        ],
+      ]),
+    );
+  }
+}
+
+class _VerdictPill extends StatelessWidget {
+  final String status;
+  final String label;
+  const _VerdictPill({required this.status, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = status == 'not_adequate' ? kRed : status == 'adequate' ? kGreen : kOrange;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: c.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: c.withOpacity(0.4)),
+      ),
+      child: Text(label, style: TextStyle(color: c, fontSize: 10, fontWeight: FontWeight.w600)),
     );
   }
 }

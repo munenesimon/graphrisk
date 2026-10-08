@@ -440,3 +440,54 @@ def test_edr_check_does_not_count_a_reporting_agent_without_antivirus():
     protection = result.discovered_assets[0]["profile"]["protection"]
     assert protection["status"] == "Installed, not seen running"
     assert protection["detected"] == ["Malwarebytes — installed, not seen running"]
+
+
+# ── Vulnerability patching -> "Vulnerability & Patch Management" ─────────────
+
+def _register_two_active_agents():
+    responses.add(responses.POST, f"{BASE_URL}/security/user/authenticate",
+                  json={"data": {"token": "fake-wazuh-jwt"}}, status=200)
+    responses.add(responses.GET, f"{BASE_URL}/agents", json={"data": {"affected_items": [
+        {"id": "000", "status": "active"},
+        {"id": "001", "status": "active", "name": "Simo"},
+        {"id": "002", "status": "active", "name": "build-02"},
+    ]}}, status=200)
+
+
+@responses.activate
+def test_patching_check_scores_the_share_of_devices_without_critical_or_high_findings():
+    with _mock_private_dns():
+        _register_two_active_agents()
+        responses.add(responses.POST, f"{INDEXER_URL}/wazuh-states-vulnerabilities-*/_search", json={
+            "aggregations": {"by_agent": {"buckets": [
+                {"key": "001", "by_severity": {"buckets": [{"key": "High", "doc_count": 274},
+                                                           {"key": "Critical", "doc_count": 39},
+                                                           {"key": "Medium", "doc_count": 208}]}},
+                {"key": "002", "by_severity": {"buckets": [{"key": "Medium", "doc_count": 3}]}},
+            ]}}})
+        adapter = WazuhAdapter(tenant_id="t", config=_wazuh_config_with_indexer())
+        assert "wazuh_vulnerability_patching" in adapter.supported_checks()
+        result = adapter.run_check("wazuh_vulnerability_patching")
+
+    assert result.score == 0.5
+    assert result.status == CheckStatus.FAIL
+    assert result.affected_count == 1 and result.total_count == 2
+    assert result.control_title == "Vulnerability & Patch Management"
+    assert result.detail == ("1 of 2 scanned devices have no open Critical or High vulnerabilities "
+                             "(39 critical and 274 high findings open in total)")
+
+
+@responses.activate
+def test_patching_check_refuses_to_score_without_scan_data():
+    with _mock_private_dns():
+        _register_two_active_agents()
+        responses.add(responses.POST, f"{INDEXER_URL}/wazuh-states-vulnerabilities-*/_search",
+                      json={"aggregations": {"by_agent": {"buckets": []}}})
+        adapter = WazuhAdapter(tenant_id="t", config=_wazuh_config_with_indexer())
+        with pytest.raises(RuntimeError, match="No vulnerability scan results"):
+            adapter.run_check("wazuh_vulnerability_patching")
+
+
+def test_patching_check_is_skipped_without_the_indexer():
+    adapter = WazuhAdapter(tenant_id="t", config={"api_url": BASE_URL, "username": "u", "password": "p"})
+    assert adapter.supported_checks() == ["wazuh_agent_connectivity", "wazuh_sca_compliance"]
