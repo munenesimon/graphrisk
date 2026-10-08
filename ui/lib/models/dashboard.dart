@@ -69,6 +69,9 @@ class BlastRadius {
   /// Root cause: per (risk, asset) link, the CVEs recorded as the reason
   /// for it -- see blast_radius.py's _risk_drivers.
   final List<RiskDriver>      riskDrivers;
+  /// How each exposed risk's score is worked out -- see the API's
+  /// app/scoring.py. Empty when the API didn't send it.
+  final List<RiskScore>       riskScores;
 
   BlastRadius({
     required this.controlTitle,
@@ -86,7 +89,15 @@ class BlastRadius {
     required this.mappedFrameworkControls,
     required this.regulatoryObligations,
     this.riskDrivers = const [],
+    this.riskScores = const [],
   });
+
+  RiskScore? scoreFor(String risk) {
+    for (final s in riskScores) {
+      if (s.risk == risk) return s;
+    }
+    return null;
+  }
 
   factory BlastRadius.fromJson(Map<String, dynamic> j) {
     final br = j['blast_radius'] as Map<String, dynamic>? ?? {};
@@ -110,8 +121,81 @@ class BlastRadius {
           .whereType<Map<String, dynamic>>()
           .map(RiskDriver.fromJson)
           .toList(),
+      riskScores: (br['risk_scores'] as List? ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map(RiskScore.fromJson)
+          .toList(),
     );
   }
+}
+
+double _d(dynamic v) => v is num ? v.toDouble() : 0.0;
+
+/// One risk's score and the working behind it:
+///   score = likelihood × impact × product of (1 − strength × health)
+/// over every control on the risk.
+class RiskScore {
+  final String risk;
+  final num likelihood;
+  final num impact;
+  final double inherentScore;
+  final double currentScore;
+  /// The score if the control this blast radius is about stopped working.
+  final double ifControlFails;
+  final List<ScoreControl> controls;
+
+  RiskScore({
+    required this.risk,
+    required this.likelihood,
+    required this.impact,
+    required this.inherentScore,
+    required this.currentScore,
+    required this.ifControlFails,
+    required this.controls,
+  });
+
+  factory RiskScore.fromJson(Map<String, dynamic> j) => RiskScore(
+    risk:           j['risk']?.toString() ?? '',
+    likelihood:     j['likelihood'] is num ? j['likelihood'] as num : 0,
+    impact:         j['impact'] is num ? j['impact'] as num : 0,
+    inherentScore:  _d(j['inherent_score']),
+    currentScore:   _d(j['current_score']),
+    ifControlFails: _d(j['if_control_fails']),
+    controls: (j['controls'] as List? ?? [])
+        .whereType<Map<String, dynamic>>()
+        .map(ScoreControl.fromJson)
+        .toList(),
+  );
+}
+
+class ScoreControl {
+  final String title;
+  final String? status;
+  /// How well the control is operating now (0..1).
+  final double health;
+  /// How much of this risk it addresses when it works (0..1).
+  final double strength;
+  /// health × strength: the share of the remaining risk it removes.
+  final double reduction;
+  final bool isTrigger;
+
+  ScoreControl({
+    required this.title,
+    this.status,
+    required this.health,
+    required this.strength,
+    required this.reduction,
+    required this.isTrigger,
+  });
+
+  factory ScoreControl.fromJson(Map<String, dynamic> j) => ScoreControl(
+    title:     j['title']?.toString() ?? '',
+    status:    j['status']?.toString(),
+    health:    _d(j['health']),
+    strength:  _d(j['strength']),
+    reduction: _d(j['reduction']),
+    isTrigger: j['is_trigger'] == true,
+  );
 }
 
 /// Why one asset is under one risk: the CVEs recorded on that link.

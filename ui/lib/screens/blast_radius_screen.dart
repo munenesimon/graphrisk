@@ -584,7 +584,7 @@ class _TriggerNode extends StatelessWidget {
           // Effectiveness bar
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
-              const Text('Control effectiveness',
+              const Text('Control health',
                   style: TextStyle(color: Colors.white54, fontSize: 12)),
               const Spacer(),
               Text('${(result.effectivenessScore * 100).toInt()}%',
@@ -784,9 +784,21 @@ bool _isIneffective(BlastRadius r) => r.effectivenessScore <= 0.005;
 
 String _pct(BlastRadius r) => '${(r.effectivenessScore * 100).round()}%';
 
+String _score(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(v < 10 ? 2 : 1);
+
 String _riskExplanation(BlastRadius r, String risk) {
   final c = '"${r.controlTitle}"';
   final hasCause = r.riskDrivers.any((d) => d.risk == risk && d.cves.isNotEmpty);
+  final s = r.scoreFor(risk);
+  if (s != null) {
+    final cause = hasCause ? ' The root cause below is worth fixing directly either way.' : '';
+    if (s.ifControlFails - s.currentScore < 0.005) {
+      return '$c isn\'t lowering this risk right now (${_pct(r)} health), so it scores '
+          '${_score(s.currentScore)} of a possible ${_score(s.inherentScore)}.$cause';
+    }
+    return 'Scores ${_score(s.currentScore)} of a possible ${_score(s.inherentScore)} with the controls '
+        'below. If $c stopped working it would rise to ${_score(s.ifControlFails)}.$cause';
+  }
   if (_isFullyEffective(r)) {
     return 'Currently mitigated by $c (${_pct(r)} effective), so its score is 0 '
         'right now. This view shows what becomes exposed if that control fails '
@@ -806,9 +818,9 @@ String _assetExplanation(String asset, BlastRadius? r) {
       r.riskDrivers.any((d) => d.asset == asset && d.cves.isNotEmpty);
   final fix = hasCause ? 'Fix the root cause below' : 'Review the asset\'s risk links';
   if (r != null && _isFullyEffective(r)) {
-    return '$asset is currently covered: "${r.controlTitle}" is fully effective '
-        'against the risks linked to it. If that control fails, $asset is '
-        'exposed through those risks.'
+    return '"${r.controlTitle}" is working at full health and lowers the risks '
+        'linked to $asset (each risk above shows by how much). If that control '
+        'fails, $asset is more exposed through those risks.'
         '${hasCause ? ' Fixing the root cause below removes the exposure instead of relying on the control.' : ''}';
   }
   if (r != null && _isIneffective(r)) {
@@ -868,18 +880,7 @@ class _RiskItemState extends State<_RiskItem> {
                   const TextStyle(color: Colors.white60, fontSize: 12, height: 1.5),
             ),
             const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                  color: kSurface2, borderRadius: BorderRadius.circular(6)),
-              child: Text(
-                'risk_score = likelihood × impact × (1 − ${widget.result.effectivenessScore.toStringAsFixed(1)})',
-                style: const TextStyle(
-                    color: kAccent,
-                    fontSize: 11,
-                    fontFamily: 'monospace'),
-              ),
-            ),
+            _ScoreWorking(score: widget.result.scoreFor(widget.name), result: widget.result),
             _RootCause.forRisk(widget.result, widget.name),
           ],
         ]),
@@ -1341,10 +1342,13 @@ class _MathCard extends StatelessWidget {
           decoration: BoxDecoration(
               color: kBackground, borderRadius: BorderRadius.circular(8)),
           child: Text(
-            'risk_score = likelihood × impact × (1 − control_effectiveness)\n\n'
-            'With "${result.controlTitle}" at ${(result.effectivenessScore * 100).toInt()}% effectiveness,\n'
-            'every linked risk score is automatically recalculated.\n'
-            'Change the control status → graph updates instantly.',
+            'risk score = likelihood × impact × (1 − strength × health) for each control\n\n'
+            'health    how well a control is working now: its latest connector\n'
+            '          check, or its status if set by hand\n'
+            'strength  how much of that particular risk the control addresses\n\n'
+            'Controls combine: each removes its share of what the others leave.\n'
+            '"${result.controlTitle}" is at ${(result.effectivenessScore * 100).round()}% health; '
+            'change it and every\nlinked risk is rescored.',
             style: const TextStyle(
                 color: Colors.white54,
                 fontSize: 12,
@@ -1472,4 +1476,55 @@ class _StatusBadge extends StatelessWidget {
             style: TextStyle(
                 color: _color, fontSize: 11, fontWeight: FontWeight.bold)),
       );
+}
+
+
+// ── Score working ────────────────────────────────────────────────────────────
+// One risk's score, step by step: likelihood × impact, then one line per
+// control with the share of the remaining risk it leaves, then the result
+// now and if the control this view is about fails. Falls back to the plain
+// formula when the API didn't send the breakdown.
+class _ScoreWorking extends StatelessWidget {
+  final RiskScore? score;
+  final BlastRadius result;
+  const _ScoreWorking({required this.score, required this.result});
+
+  static const _mono = TextStyle(color: Colors.white70, fontSize: 11, fontFamily: 'monospace', height: 1.6);
+
+  @override
+  Widget build(BuildContext context) {
+    final s = score;
+    final box = BoxDecoration(color: kSurface2, borderRadius: BorderRadius.circular(6));
+    if (s == null) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: box,
+        child: const Text('risk score = likelihood × impact × (1 − strength × health) per control',
+            style: TextStyle(color: kAccent, fontSize: 11, fontFamily: 'monospace')),
+      );
+    }
+    String pct(double v) => '${(v * 100).round()}%';
+    final lines = <Widget>[
+      Text('${_score(s.inherentScore).padLeft(6)}   likelihood ${s.likelihood} × impact ${s.impact}', style: _mono),
+      for (final c in s.controls)
+        Text(
+          '× ${(1 - c.reduction).toStringAsFixed(2)}   ${c.title}: health ${pct(c.health)} × '
+          'strength ${pct(c.strength)}',
+          style: _mono.copyWith(color: c.isTrigger ? kAccent : Colors.white70),
+        ),
+      if (s.controls.isEmpty)
+        Text('× 1.00   no control mitigates this risk', style: _mono.copyWith(color: kOrange)),
+      const Divider(height: 10, color: Colors.white12),
+      Text('= ${_score(s.currentScore)} now', style: _mono.copyWith(color: Colors.white, fontWeight: FontWeight.w600)),
+      if (s.ifControlFails - s.currentScore >= 0.005)
+        Text('  ${_score(s.ifControlFails)} if "${result.controlTitle}" fails',
+            style: _mono.copyWith(color: kRed)),
+    ];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: box,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: lines),
+    );
+  }
 }

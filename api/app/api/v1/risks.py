@@ -39,7 +39,14 @@ async def create_risk(risk: RiskCreate, user: CurrentUser = Depends(get_current_
     return {"id": risk_id, "message": "Risk created", "risk_score": risk.likelihood * risk.impact}
 
 @router.post("/{risk_id}/link-control")
-async def link_control(risk_id: str, control_id: str = Query(), effectiveness: float = Query(default=0.8), user: CurrentUser = Depends(get_current_user)):
+async def link_control(
+    risk_id: str,
+    control_id: str = Query(),
+    # Link *strength*: how much of this risk the control addresses when it
+    # works (0..1). The control's own health is separate -- see app/scoring.py.
+    effectiveness: float = Query(default=0.8, ge=0.0, le=1.0),
+    user: CurrentUser = Depends(get_current_user),
+):
     result = run_write(queries.LINK_CONTROL_TO_RISK, {"risk_id": risk_id, "control_id": control_id, "effectiveness": effectiveness, "tenant_id": user.graph_tenant_id})
     if not result:
         raise HTTPException(status_code=404, detail="Risk or control not found")

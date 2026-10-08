@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from app.graph.connection import run_query
 from app.graph import queries
 from app.auth.jwt_auth import get_current_user, CurrentUser
+from app.scoring import explain_risk
 
 router = APIRouter()
 
@@ -114,6 +115,18 @@ def _risk_drivers(tenant_id: str, control_id: str) -> list[dict]:
     return out
 
 
+def _risk_scores(tenant_id: str, control_id: str) -> list[dict]:
+    """How each exposed risk's score is worked out: inherent (likelihood ×
+    impact), current, and if this control fails -- with every control on the
+    risk and its health × strength. See app/scoring.py. [] if the query
+    fails: the breakdown is an explanation, never worth failing the view."""
+    try:
+        rows = run_query(queries.BLAST_RADIUS_RISK_SCORES, {"control_id": control_id, "tenant_id": tenant_id})
+    except Exception:
+        return []
+    return [explain_risk(row, control_id) for row in rows or [] if row.get("risk")]
+
+
 @router.get("/blast-radius/control/{control_id}")
 async def blast_radius_control(
     control_id: str,
@@ -146,6 +159,8 @@ async def blast_radius_control(
             "mapped_framework_controls": mapped,
             # Root cause: which CVEs put each affected asset under each risk.
             "risk_drivers": _risk_drivers(user.graph_tenant_id, control_id),
+            # The working behind each risk's score, incl. "if this control fails".
+            "risk_scores": _risk_scores(user.graph_tenant_id, control_id),
         },
         "regulatory_obligations": _regulatory_obligations(user.graph_tenant_id, row.get("affected_asset_ids") or []),
         "summary": {"risk_count": row["risk_count"], "asset_count": row["asset_count"], "framework_count": len(included)}
