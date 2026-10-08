@@ -135,3 +135,46 @@ def test_stale_device_data_is_called_out():
     assert stale[0]["title"] == "Re-run Wazuh: this device's data is 36 hours old"
     # Fresh data: nothing to say.
     assert recommend_for_asset(profile, [], [], now=datetime(2026, 10, 6, 21, 0, tzinfo=timezone.utc)) == []
+
+
+# ── Progress-based control health (every fix counts) ────────────────────────
+from app.connectors.models import CheckCategory, CheckResult, CheckStatus
+from app.connectors.registry import CheckRegistry
+from app.graph import queries as graph_queries
+
+
+def _patch_result(open_weight, devices=1):
+    return CheckResult(
+        check_id="wazuh_vulnerability_patching", check_name="Patching", category=CheckCategory.ENDPOINT,
+        source="wazuh", tenant_id="test", status=CheckStatus.FAIL, score=0.0,
+        detail="findings open", control_title="Vulnerability & Patch Management",
+        raw_data={"progress": {"open_weight": open_weight, "devices": devices}},
+    )
+
+
+def test_each_resolved_finding_raises_control_health(fake_graph):
+    # The worst load ever seen for this control was 1697 (the laptop's first scan).
+    fake_graph.write.side_effect = lambda q, p=None: (
+        [{"peak": 1697.0}] if q == graph_queries.RECORD_CONTROL_PEAK else [])
+    reg = CheckRegistry()
+
+    first = _patch_result(1697.0)
+    reg._apply_progress(first)
+    assert first.score == 0.0
+
+    after_winrar = _patch_result(1669.0)          # 7 High findings fixed (7 x 4)
+    reg._apply_progress(after_winrar)
+    assert after_winrar.score == round(1 - 1669 / 1697, 4)
+    assert after_winrar.detail.endswith("2% of the worst level seen has been resolved")
+
+    all_fixed = _patch_result(0.0)
+    reg._apply_progress(all_fixed)
+    assert all_fixed.score == 1.0 and all_fixed.status == CheckStatus.PASS
+
+
+def test_progress_baseline_is_recorded_per_tenant_and_control(fake_graph):
+    fake_graph.write.side_effect = lambda q, p=None: []
+    CheckRegistry()._apply_progress(_patch_result(12.0))
+    calls = [c.args for c in fake_graph.write.call_args_list if c.args[0] == graph_queries.RECORD_CONTROL_PEAK]
+    assert calls[0][1] == {"tenant_id": "test", "control_title": "Vulnerability & Patch Management",
+                           "open_weight": 12.0}

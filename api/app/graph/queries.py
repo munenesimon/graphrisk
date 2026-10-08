@@ -154,3 +154,14 @@ SET_RISK_APPETITE = """
     SET o.risk_appetite = $risk_appetite, o.risk_appetite_updated_at = datetime()
     RETURN o.risk_appetite AS risk_appetite
 """
+
+# Progress-based control health (see CheckRegistry._apply_progress): remember
+# the worst open-issue load a check has reported for this control, so later
+# runs can score how much of it has been resolved.
+RECORD_CONTROL_PEAK = """
+    MATCH (c:Control {title: $control_title, tenant_id: $tenant_id})
+    SET c.peak_open_weight = CASE
+            WHEN c.peak_open_weight IS NULL OR c.peak_open_weight < $open_weight THEN $open_weight
+            ELSE c.peak_open_weight END
+    RETURN c.peak_open_weight AS peak
+"""

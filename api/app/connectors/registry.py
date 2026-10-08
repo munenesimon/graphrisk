@@ -10,7 +10,7 @@ import logging
 from typing import Optional
 
 from .base import BaseConnector, CheckError
-from .models import CheckResult
+from .models import CheckResult, CheckStatus
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +72,61 @@ class CheckRegistry:
             self._ingest_assets(result, tenant_id)
         return results, errors
 
+    # A tiny open-issue load shouldn't read as 0% just because it's the worst
+    # seen so far: the baseline is at least this much per device (about two
+    # critical findings' worth).
+    PROGRESS_FLOOR_PER_DEVICE = 20.0
+
+    def _apply_progress(self, result: CheckResult) -> None:
+        """
+        Turn an open-issue load into progress-based control health.
+
+        A check can report raw_data["progress"] = {"open_weight", "devices"}:
+        a severity-weighted count of open issues (e.g. Wazuh's vulnerability
+        findings). Health is then the share of the worst load ever seen for
+        that control that has since been resolved:
+
+            health = 1 - open_weight / max(peak_open_weight, floor x devices)
+
+        so every issue fixed raises it a little, the risks the control
+        mitigates fall with it, and nothing new to fix means full health.
+        The peak is kept on the Control node and only ever rises.
+        """
+        progress = (result.raw_data or {}).get("progress")
+        if not isinstance(progress, dict) or not result.control_title:
+            return
+        try:
+            open_weight = max(float(progress["open_weight"]), 0.0)
+            devices = max(int(progress.get("devices") or 1), 1)
+        except (KeyError, TypeError, ValueError):
+            return
+        peak = open_weight
+        try:
+            from app.graph.connection import run_write
+            from app.graph import queries
+            rows = run_write(queries.RECORD_CONTROL_PEAK, {
+                "tenant_id": result.tenant_id, "control_title": result.control_title,
+                "open_weight": open_weight,
+            }) or []
+            if rows and rows[0].get("peak") is not None:
+                peak = max(float(rows[0]["peak"]), open_weight)
+        except Exception as e:
+            logger.warning(f"Couldn't record progress baseline for {result.check_id}: {e}")
+        baseline = max(peak, self.PROGRESS_FLOOR_PER_DEVICE * devices)
+        score = round(max(0.0, 1.0 - open_weight / baseline), 4) if baseline > 0 else 1.0
+        result.score = score
+        result.status = (CheckStatus.PASS if score >= 0.95 else
+                         CheckStatus.WARNING if score >= 0.80 else CheckStatus.FAIL)
+        if peak > open_weight:
+            result.detail += (f"; {round((peak - open_weight) / peak * 100)}% of the worst level seen "
+                              "has been resolved")
+
     def _write_to_graph(self, result: CheckResult) -> None:
         """Write a CheckResult to Neo4j, updating the Control and cascading to Risks."""
         if not result.control_title:
             logger.warning(f"CheckResult {result.check_id} has no control_title -- skipping graph write")
             return
+        self._apply_progress(result)
         try:
             from app.graph.connection import run_write
             from graphrisk_core.queries import WRITE_CHECK_RESULT

@@ -469,12 +469,14 @@ def test_patching_check_scores_the_share_of_devices_without_critical_or_high_fin
         assert "wazuh_vulnerability_patching" in adapter.supported_checks()
         result = adapter.run_check("wazuh_vulnerability_patching")
 
-    assert result.score == 0.5
+    # Every open finding counts, weighted by severity: 39x10 + 274x4 + 211x1.
+    assert result.raw_data["progress"] == {"open_weight": 1697.0, "devices": 2}
+    assert result.score == 0.0                     # no history yet: nothing resolved
     assert result.status == CheckStatus.FAIL
     assert result.affected_count == 1 and result.total_count == 2
     assert result.control_title == "Vulnerability & Patch Management"
-    assert result.detail == ("1 of 2 scanned devices have no open Critical or High vulnerabilities "
-                             "(39 critical and 274 high findings open in total)")
+    assert result.detail == ("39 critical, 274 high, 211 medium and 0 low findings open across "
+                             "2 scanned devices; 1 with no Critical or High")
 
 
 @responses.activate
@@ -491,3 +493,19 @@ def test_patching_check_refuses_to_score_without_scan_data():
 def test_patching_check_is_skipped_without_the_indexer():
     adapter = WazuhAdapter(tenant_id="t", config={"api_url": BASE_URL, "username": "u", "password": "p"})
     assert adapter.supported_checks() == ["wazuh_agent_connectivity", "wazuh_sca_compliance"]
+
+
+
+@responses.activate
+def test_patching_check_gives_partial_credit_for_a_light_load():
+    with _mock_private_dns():
+        _register_two_active_agents()
+        responses.add(responses.POST, f"{INDEXER_URL}/wazuh-states-vulnerabilities-*/_search", json={
+            "aggregations": {"by_agent": {"buckets": [
+                {"key": "001", "by_severity": {"buckets": [{"key": "Medium", "doc_count": 4}]}},
+                {"key": "002", "by_severity": {"buckets": []}},
+            ]}}})
+        result = WazuhAdapter(tenant_id="t", config=_wazuh_config_with_indexer()).run_check(
+            "wazuh_vulnerability_patching")
+    # 4 Medium against a floor of 20 per device x 2 devices.
+    assert result.score == 0.9

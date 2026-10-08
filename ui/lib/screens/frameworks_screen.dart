@@ -60,7 +60,11 @@ class _FrameworksScreenState extends State<FrameworksScreen> {
               style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
           const SizedBox(height: 16),
           ...coverageList.map((c) {
-            final pct     = (c['coverage_pct'] ?? 0.0).toDouble();
+            final coverage = (c['coverage_pct'] ?? 0.0).toDouble();
+            // Adherence: how well each requirement is actually met, from the
+            // health of the controls covering it -- rises as findings are
+            // fixed. Falls back to plain coverage from an older API.
+            final pct     = (c['adherence_pct'] ?? coverage).toDouble();
             final color   = pct >= 80 ? kGreen : pct >= 40 ? kOrange : kRed;
             final covered = c['covered_controls']?.toString() ?? '0';
             final total   = c['total_controls']?.toString()   ?? '0';
@@ -74,21 +78,15 @@ class _FrameworksScreenState extends State<FrameworksScreen> {
                 Row(children: [
                   Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                   const Spacer(),
-                  Text('${pct.toStringAsFixed(1)}%',
+                  Text('${pct.toStringAsFixed(1)}% met',
                       style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 16)),
                 ]),
                 const SizedBox(height: 4),
-                Text('$covered / $total controls covered',
+                Text('$covered / $total requirements have a control in place '
+                    '(${coverage.toStringAsFixed(0)}%) · met by how well those controls are working',
                     style: const TextStyle(color: Colors.white54, fontSize: 12)),
                 const SizedBox(height: 10),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(
-                    value: pct / 100, minHeight: 8,
-                    backgroundColor: kSurface2,
-                    valueColor: AlwaysStoppedAnimation(color),
-                  ),
-                ),
+                AnimatedBar(value: pct / 100, color: color, height: 8),
               ]),
             );
             if (id.isEmpty) return card;

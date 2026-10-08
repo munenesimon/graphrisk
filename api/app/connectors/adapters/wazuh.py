@@ -171,6 +171,12 @@ PROTECTION_PACKAGES: tuple[tuple[str, str], ...] = (
     (r"\bmicrosoft defender for endpoint\b|\bmdatp\b", "Microsoft Defender for Endpoint"),
 )
 
+# Vulnerability patching: how much one open finding of each severity counts
+# toward the patch-management load (Critical ≈ 10 Mediums), and the smallest
+# baseline per device so a handful of findings isn't scored as 0%.
+PATCH_SEVERITY_WEIGHTS = {"Critical": 10.0, "High": 4.0, "Medium": 1.0, "Low": 0.25}
+PATCH_FLOOR_PER_DEVICE = 20.0
+
 # Processes / packages fetched per agent for the check above. Generous --
 # a busy Windows laptop runs a few hundred processes.
 MAX_PROCESSES_PER_AGENT = 1000
@@ -751,11 +757,19 @@ class WazuhAdapter(BaseConnector):
             sev = counts.get(agent_id) or {}
             return int(sev.get("Critical", 0)) + int(sev.get("High", 0))
 
+        def total_of(severity: str) -> int:
+            return sum(int((counts.get(a.get("id")) or {}).get(severity, 0)) for a in scanned)
+
         clean = sum(1 for a in scanned if serious(a.get("id")) == 0)
         total = len(scanned)
-        critical = sum(int((counts.get(a.get("id")) or {}).get("Critical", 0)) for a in scanned)
-        high = sum(int((counts.get(a.get("id")) or {}).get("High", 0)) for a in scanned)
-        score = round(clean / total, 4)
+        by_sev = {s: total_of(s) for s in ("Critical", "High", "Medium", "Low")}
+        # Every open finding counts, weighted by severity, so each one fixed
+        # moves the score -- CheckRegistry turns this into progress against
+        # the worst load seen (see _apply_progress). Until then, a
+        # no-history estimate.
+        open_weight = sum(PATCH_SEVERITY_WEIGHTS[s] * n for s, n in by_sev.items())
+        baseline = max(open_weight, PATCH_FLOOR_PER_DEVICE * total)
+        score = round(1.0 - open_weight / baseline, 4) if baseline else 1.0
         return CheckResult(
             check_id="wazuh_vulnerability_patching",
             check_name="Wazuh Vulnerability Patching",
@@ -770,9 +784,11 @@ class WazuhAdapter(BaseConnector):
             score=score,
             affected_count=total - clean,
             total_count=total,
-            detail=(f"{clean} of {total} scanned device{'s' if total != 1 else ''} have no open Critical "
-                    f"or High vulnerabilities ({critical} critical and {high} high findings open in total)"),
+            detail=(f"{by_sev['Critical']} critical, {by_sev['High']} high, {by_sev['Medium']} medium and "
+                    f"{by_sev['Low']} low findings open across {total} scanned device{'s' if total != 1 else ''}; "
+                    f"{clean} with no Critical or High"),
             control_title=self._control_title("wazuh_vulnerability_patching"),
+            raw_data={"progress": {"open_weight": open_weight, "devices": total}},
         )
 
     def _check_sca_compliance(self) -> CheckResult:
