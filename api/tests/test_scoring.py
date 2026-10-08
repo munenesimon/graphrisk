@@ -126,3 +126,99 @@ def test_link_strength_must_be_a_fraction(client, fake_graph, as_user):
     as_user(graph_tenant_id="acme")
     resp = client.post("/api/v1/risks/r1/link-control", params={"control_id": "c1", "effectiveness": 1.5})
     assert resp.status_code == 422
+
+
+# ── Adequacy against the risk appetite ───────────────────────────────────────
+from app.scoring import DEFAULT_RISK_APPETITE, assess_risk
+
+TEST_RANSOMWARE = {  # the test tenant: patching 0%, CIS benchmark 28%, EDR 100%
+    "risk": "Ransomware Infection Risk", "likelihood": 3, "impact": 5,
+    "controls": [
+        {"id": "ctrl-vpm", "title": "Vulnerability & Patch Management", "health": 0.0, "strength": 0.6},
+        {"id": "ctrl-scb", "title": "Secure Configuration Baseline", "health": 0.2758, "strength": 0.5},
+        {"id": EDR, "title": "Endpoint Detection & Response", "health": 1.0, "strength": 0.7},
+    ],
+}
+UNPATCHED = {
+    "risk": "Unpatched Vulnerability Risk", "likelihood": 3, "impact": 4,
+    "controls": [
+        {"id": "ctrl-vpm", "title": "Vulnerability & Patch Management", "health": 0.0, "strength": 0.8},
+        {"id": "ctrl-scb", "title": "Secure Configuration Baseline", "health": 0.2758, "strength": 0.4},
+    ],
+}
+
+
+def _assess(row, appetite=DEFAULT_RISK_APPETITE):
+    return assess_risk(explain_risk(row, EDR), appetite)
+
+
+def test_above_appetite_names_the_control_that_would_close_the_gap():
+    a = _assess(UNPATCHED)
+    assert a["status"] == "not_adequate"
+    assert a["reason"] == "Scores 10.68, above your risk appetite of 4."
+    assert a["fix"] == ("Bringing Vulnerability & Patch Management to full health (now 0%) "
+                        "would lower it to 2.14, within appetite.")
+
+
+def test_above_appetite_with_no_way_out_says_a_new_control_is_needed():
+    a = _assess(EXFIL)
+    assert a["status"] == "not_adequate"
+    assert "Even with every linked control at full health it would score 4.8" in a["fix"]
+    # DLP's link records 0% strength -- flagged so someone checks it.
+    assert "Data Loss Prevention is linked but recorded as addressing none of this risk" in a["fix"]
+    assert _assess({"risk": "x", "likelihood": 3, "impact": 4, "controls": []})["fix"] == \
+        "No control mitigates this risk yet — it needs one."
+
+
+def test_within_appetite_but_one_failure_away_is_called_out():
+    a = _assess(TEST_RANSOMWARE)
+    assert a["status"] == "relies_on_control"
+    assert a["label"] == "Relies on one control"
+    assert "if Endpoint Detection & Response failed it would rise to 12.93" in a["reason"]
+    assert "losing Secure Configuration Baseline would also push it over" in a["reason"]
+
+
+def test_adequate_when_no_single_failure_breaks_the_appetite():
+    a = _assess(RANSOMWARE, appetite=6)          # 5.55 if EDR fails, still ≤ 6
+    assert a["status"] == "adequate"
+    assert a["fix"] is None
+    assert a["reason"] == "Scores 1.11, within your appetite of 6, and stays within it if any one control fails."
+
+
+def test_appetite_defaults_when_unset_and_only_owners_can_change_it(client, fake_graph, as_user):
+    as_user(role="analyst", graph_tenant_id="acme")
+    fake_graph.query.side_effect = lambda q, p=None: []
+    resp = client.get("/api/v1/organisation/risk-appetite")
+    assert resp.status_code == 200
+    assert resp.json() == {"risk_appetite": DEFAULT_RISK_APPETITE, "is_default": True,
+                           "default": DEFAULT_RISK_APPETITE, "max": 25.0}
+    assert client.put("/api/v1/organisation/risk-appetite", json={"risk_appetite": 6}).status_code == 403
+
+    as_user(role="owner", graph_tenant_id="acme")
+    assert client.put("/api/v1/organisation/risk-appetite", json={"risk_appetite": 30}).status_code == 422
+    fake_graph.query.side_effect = lambda q, p=None: (
+        [{"risk_appetite": 6.0}] if q == app_queries.GET_RISK_APPETITE else [])
+    resp = client.put("/api/v1/organisation/risk-appetite", json={"risk_appetite": 6})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["risk_appetite"] == 6.0 and resp.json()["is_default"] is False
+    written = [c.args for c in fake_graph.write.call_args_list if c.args[0] == app_queries.SET_RISK_APPETITE]
+    assert written and written[-1][1] == {"tenant_id": "acme", "risk_appetite": 6.0}
+
+
+def test_blast_radius_attaches_a_verdict_to_each_risk(client, fake_graph, as_user):
+    as_user(graph_tenant_id="acme")
+
+    def _fake(query, params=None):
+        if query == app_queries.BLAST_RADIUS_CONTROL:
+            return [CONTROL_ROW]
+        if query == app_queries.BLAST_RADIUS_RISK_SCORES:
+            return [EXFIL, RANSOMWARE]
+        if query == app_queries.GET_RISK_APPETITE:
+            return [{"risk_appetite": 4.0}]
+        return []
+    fake_graph.query.side_effect = _fake
+
+    scores = {s["risk"]: s for s in client.get(f"/api/v1/graph/blast-radius/control/{EDR}").json()["blast_radius"]["risk_scores"]}
+    assert scores["Data Exfiltration Risk"]["assessment"]["status"] == "not_adequate"
+    assert scores["Ransomware Infection Risk"]["assessment"]["status"] == "relies_on_control"
+    assert scores["Ransomware Infection Risk"]["assessment"]["appetite"] == 4.0

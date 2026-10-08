@@ -385,9 +385,10 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
             slide: _layerSlides[0],
             child: _ExpandableSection(
               title: 'Exposed Risks',
-              subtitle: _isFullyEffective(_result!)
-                  ? '${_result!.riskCount} risk${_result!.riskCount == 1 ? '' : 's'} mitigated · exposed if this control fails'
-                  : '${_result!.riskCount} risk${_result!.riskCount == 1 ? '' : 's'} activated',
+              subtitle: (_isFullyEffective(_result!)
+                      ? '${_result!.riskCount} risk${_result!.riskCount == 1 ? '' : 's'} mitigated · exposed if this control fails'
+                      : '${_result!.riskCount} risk${_result!.riskCount == 1 ? '' : 's'} activated') +
+                  _verdictSummary(_result!),
               color: kRed,
               icon: Icons.warning_amber_rounded,
               items: _result!.exposedRisks
@@ -784,7 +785,25 @@ bool _isIneffective(BlastRadius r) => r.effectivenessScore <= 0.005;
 
 String _pct(BlastRadius r) => '${(r.effectivenessScore * 100).round()}%';
 
-String _score(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(v < 10 ? 2 : 1);
+String _score(double v) {
+  final t = v.toStringAsFixed(2);
+  return t.contains('.') ? t.replaceFirst(RegExp(r'\.?0+$'), '') : t;
+}
+
+/// " · 1 not adequate · 1 relies on one control" -- empty when the API sent
+/// no verdicts or every risk is adequate.
+String _verdictSummary(BlastRadius r) {
+  final verdicts = r.riskScores.map((s) => s.assessment).whereType<RiskAssessment>().toList();
+  final notAdequate = verdicts.where((a) => a.notAdequate).length;
+  final relies = verdicts.where((a) => a.status == 'relies_on_control').length;
+  return [
+    if (notAdequate > 0) ' · $notAdequate not adequate',
+    if (relies > 0) ' · $relies ${relies == 1 ? 'relies' : 'rely'} on one control',
+  ].join();
+}
+
+Color _verdictColor(RiskAssessment a) =>
+    a.notAdequate ? kRed : a.adequate ? kGreen : kOrange;
 
 String _riskExplanation(BlastRadius r, String risk) {
   final c = '"${r.controlTitle}"';
@@ -867,6 +886,9 @@ class _RiskItemState extends State<_RiskItem> {
                         color: kRed,
                         fontSize: 13,
                         fontWeight: FontWeight.w500))),
+            if (widget.result.scoreFor(widget.name)?.assessment case final a?)
+              _VerdictChip(assessment: a),
+            const SizedBox(width: 6),
             Icon(_expanded ? Icons.expand_less : Icons.expand_more,
                 color: kRed.withOpacity(0.6), size: 16),
           ]),
@@ -879,6 +901,10 @@ class _RiskItemState extends State<_RiskItem> {
               style:
                   const TextStyle(color: Colors.white60, fontSize: 12, height: 1.5),
             ),
+            if (widget.result.scoreFor(widget.name)?.assessment case final a?) ...[
+              const SizedBox(height: 8),
+              _VerdictNote(assessment: a),
+            ],
             const SizedBox(height: 8),
             _ScoreWorking(score: widget.result.scoreFor(widget.name), result: widget.result),
             _RootCause.forRisk(widget.result, widget.name),
@@ -1525,6 +1551,57 @@ class _ScoreWorking extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: box,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: lines),
+    );
+  }
+}
+
+
+// ── Adequacy verdict ─────────────────────────────────────────────────────────
+class _VerdictChip extends StatelessWidget {
+  final RiskAssessment assessment;
+  const _VerdictChip({required this.assessment});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _verdictColor(assessment);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: c.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: c.withOpacity(0.4)),
+      ),
+      child: Text(assessment.label, style: TextStyle(color: c, fontSize: 10, fontWeight: FontWeight.w600)),
+    );
+  }
+}
+
+class _VerdictNote extends StatelessWidget {
+  final RiskAssessment assessment;
+  const _VerdictNote({required this.assessment});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _verdictColor(assessment);
+    final a = assessment;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: c.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: c.withOpacity(0.35)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('${a.label} · appetite ${_score(a.appetite)}',
+            style: TextStyle(color: c, fontSize: 11, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        Text(a.reason, style: const TextStyle(color: Colors.white70, fontSize: 12, height: 1.4)),
+        if (a.fix != null) ...[
+          const SizedBox(height: 4),
+          Text(a.fix!, style: const TextStyle(color: Colors.white, fontSize: 12, height: 1.4)),
+        ],
+      ]),
     );
   }
 }

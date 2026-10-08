@@ -94,16 +94,20 @@ class _RegulatoryProfileScreenState extends State<RegulatoryProfileScreen> {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Regulatory Profile',
+        const Text('Risk Appetite & Regulations',
             style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: -0.3)),
         const SizedBox(height: 4),
         const Text(
-          "Which regulations your organisation is subject to. This decides which notification "
-          "clocks show up in Blast Radius and Vulnerability Impact -- with nothing set, GraphRisk "
+          "How much risk your organisation accepts, which decides whether each risk's controls are "
+          "adequate -- and which regulations you are subject to, which decides the notification "
+          "clocks in Blast Radius and Vulnerability Impact. With no regulations set, GraphRisk "
           "reports none, rather than guessing.",
           style: TextStyle(color: Colors.white54, fontSize: 13, height: 1.5),
         ),
         const SizedBox(height: 24),
+
+        _RiskAppetiteCard(canEdit: _canEdit && !ApiService.readOnly),
+        const SizedBox(height: 16),
 
         if (!_canEdit) _RoleNotice(role: ApiService.role),
 
@@ -379,6 +383,147 @@ class _CheckRow extends StatelessWidget {
           ),
         ]),
       ),
+    );
+  }
+}
+
+
+// ── Risk appetite ────────────────────────────────────────────────────────────
+// Self-contained: loads and saves on its own, so it never interferes with
+// the regulations form below.
+class _RiskAppetiteCard extends StatefulWidget {
+  final bool canEdit;
+  const _RiskAppetiteCard({required this.canEdit});
+
+  @override
+  State<_RiskAppetiteCard> createState() => _RiskAppetiteCardState();
+}
+
+class _RiskAppetiteCardState extends State<_RiskAppetiteCard> {
+  double? _value;
+  double? _saved;
+  bool _isDefault = true;
+  double _max = 25;
+  bool _saving = false;
+  String? _message;
+  bool _messageIsError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final data = await ApiService.getRiskAppetite();
+      if (!mounted) return;
+      setState(() {
+        _value = (data['risk_appetite'] as num?)?.toDouble() ?? 4;
+        _saved = _value;
+        _isDefault = data['is_default'] == true;
+        _max = (data['max'] as num?)?.toDouble() ?? 25;
+      });
+    } catch (e) {
+      if (!mounted || e is AuthException) return;
+      setState(() { _message = e.toString().replaceFirst('Exception: ', ''); _messageIsError = true; });
+    }
+  }
+
+  Future<void> _save() async {
+    final v = _value;
+    if (v == null) return;
+    setState(() { _saving = true; _message = null; });
+    try {
+      final data = await ApiService.setRiskAppetite(v);
+      if (!mounted) return;
+      setState(() {
+        _saved = (data['risk_appetite'] as num?)?.toDouble() ?? v;
+        _value = _saved;
+        _isDefault = false;
+        _saving = false;
+        _message = 'Saved. Every risk is now judged against an appetite of ${_fmt(_saved!)}.';
+        _messageIsError = false;
+      });
+    } catch (e) {
+      if (!mounted || e is AuthException) return;
+      setState(() { _saving = false; _message = e.toString().replaceFirst('Exception: ', ''); _messageIsError = true; });
+    }
+  }
+
+  static String _fmt(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+
+  static (String, Color) _band(double v) {
+    if (v <= 4) return ('Low', kGreen);
+    if (v <= 9) return ('Moderate', kAccent);
+    if (v <= 16) return ('High', kOrange);
+    return ('Very high', kRed);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final v = _value;
+    final (band, bandColor) = _band(v ?? 4);
+    return _SectionCard(
+      title: 'Risk appetite',
+      subtitle: v == null
+          ? 'Loading...'
+          : 'Accept residual risk up to ${_fmt(v)} of 25 · $band${_isDefault ? ' (default)' : ''}',
+      color: bandColor,
+      icon: Icons.tune,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text(
+          'The highest risk score (likelihood × impact after controls, 0-25) you are willing to '
+          'accept. Each risk is then judged against it: Adequate, Relies on one control (fine '
+          'today, but one control failing would push it over), or Not adequate, with what '
+          'would close the gap.',
+          style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.5),
+        ),
+        if (v != null) ...[
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(
+              child: Slider(
+                value: v.clamp(0, _max).toDouble(),
+                min: 0,
+                max: _max,
+                divisions: (_max * 2).round(),
+                activeColor: bandColor,
+                label: _fmt(v),
+                onChanged: widget.canEdit ? (x) => setState(() { _value = x; _message = null; }) : null,
+              ),
+            ),
+            SizedBox(
+              width: 44,
+              child: Text(_fmt(v), textAlign: TextAlign.right,
+                  style: TextStyle(color: bandColor, fontSize: 18, fontWeight: FontWeight.bold)),
+            ),
+          ]),
+          const Text('0-4 low · 5-9 moderate · 10-16 high · 17-25 very high',
+              style: TextStyle(color: Colors.white38, fontSize: 11)),
+        ],
+        if (_message != null) ...[
+          const SizedBox(height: 10),
+          Text(_message!, style: TextStyle(color: _messageIsError ? kRed : kGreen, fontSize: 12)),
+        ],
+        if (widget.canEdit && v != null) ...[
+          const SizedBox(height: 12),
+          ElevatedButton(
+            onPressed: _saving || v == _saved ? null : _save,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: kAccent,
+              foregroundColor: Colors.white,
+              disabledBackgroundColor: kAccent.withOpacity(0.3),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: Text(_saving ? 'Saving...' : 'Save appetite'),
+          ),
+        ] else if (!widget.canEdit) ...[
+          const SizedBox(height: 8),
+          const Text('Only an owner or admin can change this.',
+              style: TextStyle(color: Colors.white38, fontSize: 11)),
+        ],
+      ]),
     );
   }
 }

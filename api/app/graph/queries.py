@@ -139,3 +139,18 @@ LINK_POSSIBLE_DUPLICATE = """
     SET r.reason = $reason, r.detected_at = $detected_at
     RETURN a.id AS id
 """
+
+# The organisation's risk appetite: the highest residual risk score (0-25)
+# it accepts. Null until someone sets it -- the API then uses the default
+# in app/scoring.py and says so.
+GET_RISK_APPETITE = """
+    OPTIONAL MATCH (o:Organisation {tenant_id: $tenant_id})
+    RETURN o.risk_appetite AS risk_appetite,
+           toString(o.risk_appetite_updated_at) AS updated_at
+"""
+
+SET_RISK_APPETITE = """
+    MERGE (o:Organisation {tenant_id: $tenant_id})
+    SET o.risk_appetite = $risk_appetite, o.risk_appetite_updated_at = datetime()
+    RETURN o.risk_appetite AS risk_appetite
+"""

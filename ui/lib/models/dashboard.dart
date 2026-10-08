@@ -143,6 +143,9 @@ class RiskScore {
   /// The score if the control this blast radius is about stopped working.
   final double ifControlFails;
   final List<ScoreControl> controls;
+  /// Adequate / relies on one control / not adequate, against the
+  /// organisation's risk appetite. Null if the API didn't send one.
+  final RiskAssessment? assessment;
 
   RiskScore({
     required this.risk,
@@ -152,6 +155,7 @@ class RiskScore {
     required this.currentScore,
     required this.ifControlFails,
     required this.controls,
+    this.assessment,
   });
 
   factory RiskScore.fromJson(Map<String, dynamic> j) => RiskScore(
@@ -165,6 +169,32 @@ class RiskScore {
         .whereType<Map<String, dynamic>>()
         .map(ScoreControl.fromJson)
         .toList(),
+    assessment: j['assessment'] is Map<String, dynamic>
+        ? RiskAssessment.fromJson(j['assessment'] as Map<String, dynamic>)
+        : null,
+  );
+}
+
+class RiskAssessment {
+  /// "adequate", "relies_on_control" or "not_adequate".
+  final String status;
+  final String label;
+  final String reason;
+  /// What would close the gap; null when adequate.
+  final String? fix;
+  final double appetite;
+
+  RiskAssessment({required this.status, required this.label, required this.reason, this.fix, required this.appetite});
+
+  bool get adequate => status == 'adequate';
+  bool get notAdequate => status == 'not_adequate';
+
+  factory RiskAssessment.fromJson(Map<String, dynamic> j) => RiskAssessment(
+    status:   j['status']?.toString() ?? '',
+    label:    j['label']?.toString() ?? '',
+    reason:   j['reason']?.toString() ?? '',
+    fix:      j['fix']?.toString(),
+    appetite: _d(j['appetite']),
   );
 }
 

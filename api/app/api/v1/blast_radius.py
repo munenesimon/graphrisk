@@ -3,7 +3,8 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from app.graph.connection import run_query
 from app.graph import queries
 from app.auth.jwt_auth import get_current_user, CurrentUser
-from app.scoring import explain_risk
+from app.scoring import assess_risk, explain_risk
+from app.api.v1.organisation import read_risk_appetite
 
 router = APIRouter()
 
@@ -124,7 +125,17 @@ def _risk_scores(tenant_id: str, control_id: str) -> list[dict]:
         rows = run_query(queries.BLAST_RADIUS_RISK_SCORES, {"control_id": control_id, "tenant_id": tenant_id})
     except Exception:
         return []
-    return [explain_risk(row, control_id) for row in rows or [] if row.get("risk")]
+    appetite, _ = read_risk_appetite(tenant_id)
+    out = []
+    for row in rows or []:
+        if not row.get("risk"):
+            continue
+        explained = explain_risk(row, control_id)
+        # Adequate / relies on one control / not adequate, against the
+        # organisation's risk appetite -- with what would close the gap.
+        explained["assessment"] = assess_risk(explained, appetite)
+        out.append(explained)
+    return out
 
 
 @router.get("/blast-radius/control/{control_id}")

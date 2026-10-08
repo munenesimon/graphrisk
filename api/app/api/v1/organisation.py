@@ -1,8 +1,12 @@
 """
-Organisation-level settings. Currently just the regulatory profile: which
-frameworks the organisation is legally subject to, which decides which
-notification clocks (e.g. "tell CBK within 24 hours") show up in
-blast-radius and vulnerability-impact results.
+Organisation-level settings:
+
+- the regulatory profile: which frameworks the organisation is legally
+  subject to, which decides which notification clocks (e.g. "tell CBK
+  within 24 hours") show up in blast-radius and vulnerability-impact results;
+- the risk appetite: the highest residual risk score the organisation
+  accepts, which decides whether each risk's controls are adequate (see
+  app/scoring.py's assess_risk).
 
 Deliberately explicit: GraphRisk never assumes a tenant is regulated by
 anything. With no profile set, no regulatory obligations are reported.
@@ -13,6 +17,7 @@ from pydantic import BaseModel, Field
 from app.graph.connection import run_query, run_write
 from app.graph import queries
 from app.auth.jwt_auth import get_current_user, CurrentUser
+from app.scoring import DEFAULT_RISK_APPETITE, MAX_RISK_SCORE
 
 router = APIRouter()
 
@@ -74,3 +79,42 @@ async def set_regulatory_profile(body: RegulatoryProfile, user: CurrentUser = De
         "tenant_id": user.graph_tenant_id, "framework_ids": framework_ids, "qualifiers": qualifiers,
     })
     return {"message": "Regulatory profile updated", **_read_profile(user.graph_tenant_id)}
+
+
+# ── Risk appetite ────────────────────────────────────────────────────────────
+
+class RiskAppetite(BaseModel):
+    risk_appetite: float = Field(ge=0.0, le=MAX_RISK_SCORE,
+        description="Highest residual risk score accepted, 0-25 (likelihood × impact scale).")
+
+
+def read_risk_appetite(tenant_id: str) -> tuple[float, bool]:
+    """(appetite, is_default). Falls back to the default if unset or unreadable."""
+    try:
+        rows = run_query(queries.GET_RISK_APPETITE, {"tenant_id": tenant_id})
+    except Exception:
+        return DEFAULT_RISK_APPETITE, True
+    value = (rows[0] if rows else {}).get("risk_appetite")
+    if isinstance(value, (int, float)) and 0 <= value <= MAX_RISK_SCORE:
+        return float(value), False
+    return DEFAULT_RISK_APPETITE, True
+
+
+def _appetite_body(tenant_id: str) -> dict:
+    value, is_default = read_risk_appetite(tenant_id)
+    return {"risk_appetite": value, "is_default": is_default,
+            "default": DEFAULT_RISK_APPETITE, "max": MAX_RISK_SCORE}
+
+
+@router.get("/risk-appetite")
+async def get_risk_appetite(user: CurrentUser = Depends(get_current_user)):
+    return _appetite_body(user.graph_tenant_id)
+
+
+@router.put("/risk-appetite")
+async def set_risk_appetite(body: RiskAppetite, user: CurrentUser = Depends(get_current_user)):
+    if user.role not in PROFILE_EDITORS:
+        raise HTTPException(status_code=403, detail="Only an organisation owner or admin can change the risk appetite")
+    run_write(queries.SET_RISK_APPETITE, {"tenant_id": user.graph_tenant_id,
+                                          "risk_appetite": round(body.risk_appetite, 2)})
+    return {"message": "Risk appetite updated", **_appetite_body(user.graph_tenant_id)}

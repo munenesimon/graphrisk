@@ -330,6 +330,15 @@ class ApiService {
     });
   }
 
+  // ── Risk appetite ───────────────────────────────────────────────────────
+  // The highest residual risk score (0-25) the organisation accepts; each
+  // risk's controls are judged adequate or not against it.
+  // {risk_appetite, is_default, default, max}
+  static Future<Map<String, dynamic>> getRiskAppetite() => _get('/organisation/risk-appetite');
+
+  static Future<Map<String, dynamic>> setRiskAppetite(double value) =>
+      _put('/organisation/risk-appetite', {'risk_appetite': value});
+
   // ── Regulatory profile ──────────────────────────────────────────────────
   // Which frameworks this tenant is legally subject to -- decides which
   // notification clocks show up in blast-radius and vulnerability-impact.
