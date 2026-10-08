@@ -79,6 +79,10 @@ def main() -> None:
         if input('  Type "yes" to write the new scores: ').strip().lower() != "yes":
             print("  Nothing written.")
             return
+        # The database drops connections left idle while waiting for the
+        # answer above -- start a fresh one for the write.
+        close_graph_client()
+        get_graph_client()
         written = run_write(queries.RECALCULATE_RISK_SCORES, {"tenant_id": TENANT_ID}) or []
         print(f"  Rescored {len(written)} risks.")
     finally:
