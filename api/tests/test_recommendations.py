@@ -93,3 +93,45 @@ def test_the_asset_page_returns_recommendations(client, fake_graph, as_user):
     assert body["recommendations"][0]["title"] == "Update or remove WinRAR 6.02"
     assert body["recommendations"][0]["priority"] == "critical"
     assert body["risk_appetite"] == 4.0
+
+
+# ── Refinements from the first real-data run ────────────────────────────────
+from datetime import datetime, timezone
+
+from app.api.v1.assets import _fix_first
+from app.recommendations import data_age_hours
+
+
+def test_one_install_listed_under_two_names_becomes_one_action():
+    packages = [
+        {"name": "Microsoft ASP.NET Core 8.0.14 - Shared Framework (x86)", "version": "8.0.14.25112",
+         "cve_ids": ["CVE-A", "CVE-B"], "cve_count": 2, "max_severity": "High"},
+        {"name": "Microsoft ASP.NET Core 8.0.14 Shared Framework (x86)", "version": "8.0.14.25112",
+         "cve_ids": ["CVE-B", "CVE-C"], "cve_count": 2, "max_severity": "Critical"},
+        {"name": "Microsoft ASP.NET Core 8.0.14 Shared Framework (x86)", "version": "9.0.1",
+         "cve_ids": ["CVE-D"], "cve_count": 1, "max_severity": "High"},
+    ]
+    out = _fix_first(packages, {})
+    assert len(out) == 2                                    # different version stays separate
+    merged = next(p for p in out if p["version"] == "8.0.14.25112")
+    assert [c["cve_id"] for c in merged["cves"]] == ["CVE-A", "CVE-B", "CVE-C"]
+    assert merged["cve_count"] == 3 and merged["max_severity"] == "Critical"
+
+
+def test_patch_actions_name_rating_and_cvss_separately_without_repeated_steps():
+    n8n = {"name": "n8n", "version": "1.120.4", "cve_count": 87, "max_severity": "Critical",
+           "ransomware": False, "max_cvss": 8.8, "cves": []}
+    action = recommend_for_asset({}, [n8n], [])[0]
+    assert action["detail"] == "87 CVEs, rated Critical, highest CVSS 8.8."
+    assert action["steps"] == []
+
+
+def test_stale_device_data_is_called_out():
+    profile = {"health": {"fields": {"status": "online"},
+                          "sources": [{"name": "Wazuh", "collected_at": "2026-10-06T19:32:00+00:00"}]}}
+    now = datetime(2026, 10, 8, 7, 32, tzinfo=timezone.utc)
+    assert data_age_hours(profile, now) == 36.0
+    stale = [a for a in recommend_for_asset(profile, [], [], now=now) if a["category"] == "health"]
+    assert stale[0]["title"] == "Re-run Wazuh: this device's data is 36 hours old"
+    # Fresh data: nothing to say.
+    assert recommend_for_asset(profile, [], [], now=datetime(2026, 10, 6, 21, 0, tzinfo=timezone.utc)) == []

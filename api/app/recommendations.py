@@ -25,6 +25,7 @@ recommended from it (the page's "Not reported yet" card covers that gap).
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Iterable, Mapping
 
 from app.scoring import assess_risk, explain_risk
@@ -45,6 +46,9 @@ CATEGORY_CONTROL = {
 
 MAX_PATCH_ACTIONS = 10
 MAX_STEPS = 5
+# Connector data older than this is called out: the page reflects the last
+# report, so patches or new findings since then aren't visible yet.
+STALE_AFTER_HOURS = 24
 
 
 def _fields(profile: Mapping, section: str) -> Mapping:
@@ -73,24 +77,29 @@ def _patch_actions(fix_first: list, risks: list, source: str | None) -> list[dic
         count = pkg.get("cve_count") or len(pkg.get("cves") or [])
         sev = pkg.get("max_severity") or "Unknown"
         cvss = pkg.get("max_cvss") or 0
+        cves = f"{count} CVE{'s' if count != 1 else ''}"
+        # Severity is the scanner's rating; CVSS the base score -- they can
+        # disagree, so name both rather than implying one from the other.
+        rating = f"rated {sev}" + (f", highest CVSS {cvss:g}" if cvss else "")
         if pkg.get("ransomware"):
             priority = "critical"
-            why = f"{count} CVE{'s' if count != 1 else ''}, including at least one known to be used in ransomware."
+            why = f"{cves}, including at least one known to be used in ransomware ({rating})."
         elif sev == "Critical" or cvss >= 9:
             priority = "high"
-            why = f"{count} CVE{'s' if count != 1 else ''}, worst {sev}" + (f" (CVSS {cvss:g})." if cvss else ".")
+            why = f"{cves}, {rating}."
         elif sev == "High":
             priority = "medium"
-            why = f"{count} CVE{'s' if count != 1 else ''}, worst High" + (f" (CVSS {cvss:g})." if cvss else ".")
+            why = f"{cves}, {rating}."
         else:
             priority = "low"
-            why = f"{count} CVE{'s' if count != 1 else ''}, worst {sev}."
+            why = f"{cves}, {rating}."
         out.append({
             "priority": priority, "category": "patch",
             "title": f"Update or remove {name}",
             "detail": why,
-            "steps": ["Update to the vendor's latest version, or uninstall it if it isn't needed.",
-                      "Re-run the connector to confirm the findings are gone."],
+            # How to patch is the same for every package; the page says it
+            # once above the list instead of on every card.
+            "steps": [],
             "source": source, "helps": _helps("patch", risks),
             "cves": [c.get("cve_id") for c in (pkg.get("cves") or [])][:MAX_STEPS],
         })
@@ -151,6 +160,48 @@ def _health_actions(profile: Mapping, risks: list) -> list[dict]:
     }]
 
 
+def _parse_time(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        t = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def data_age_hours(profile: Mapping, now: datetime | None = None) -> float | None:
+    """Hours since the newest connector report on this device, or None if
+    nothing has reported."""
+    newest = None
+    for section in (profile or {}).values():
+        for src in (section or {}).get("sources") or []:
+            t = _parse_time((src or {}).get("collected_at"))
+            if t and (newest is None or t > newest):
+                newest = t
+    if newest is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    return max((now - newest).total_seconds() / 3600, 0.0)
+
+
+def _stale_actions(profile: Mapping, now: datetime | None) -> list[dict]:
+    age = data_age_hours(profile, now)
+    if age is None or age < STALE_AFTER_HOURS:
+        return []
+    names = sorted({(src or {}).get("name") for sec in (profile or {}).values()
+                    for src in (sec or {}).get("sources") or [] if (src or {}).get("name")})
+    age_text = f"{round(age)} hours" if age < 48 else f"{round(age / 24)} days"
+    return [{
+        "priority": "medium", "category": "health",
+        "title": f"Re-run {', '.join(names) or 'the connector'}: this device's data is {age_text} old",
+        "detail": ("Everything on this page reflects the last report. Updates installed or new "
+                   "findings since then won't show until the connector runs again."),
+        "steps": [],
+        "source": ", ".join(names) or None, "helps": None,
+    }]
+
+
 def _configuration_actions(profile: Mapping, risks: list) -> list[dict]:
     out = []
     src = _source(profile, "configuration")
@@ -205,13 +256,15 @@ def assess_asset_risks(risks: list, appetite: float) -> list[dict]:
     return out
 
 
-def recommend_for_asset(profile: Mapping, fix_first: list, risks: list) -> list[dict]:
+def recommend_for_asset(profile: Mapping, fix_first: list, risks: list,
+                        now: datetime | None = None) -> list[dict]:
     """Ranked actions for one device. ``risks`` should already carry their
     assessment (see assess_asset_risks)."""
     actions = (
         _patch_actions(fix_first, risks, _source(profile, "software") or _source(profile, "vulnerabilities"))
         + _protection_actions(profile, risks)
         + _health_actions(profile, risks)
+        + _stale_actions(profile, now)
         + _risk_actions(risks)
         + _configuration_actions(profile, risks)
     )

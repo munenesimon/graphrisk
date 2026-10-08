@@ -56,15 +56,43 @@ def _num(value) -> float:
         return 0.0
 
 
+_SEVERITY_ORDER = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+
+
+def _package_key(pkg: dict) -> tuple:
+    """Windows often lists one install under two slightly different names
+    (e.g. "ASP.NET Core 8.0.14 - Shared Framework" and "ASP.NET Core 8.0.14
+    Shared Framework"). Same letters and digits + same version = one package."""
+    name = "".join(ch for ch in str(pkg.get("name") or "").lower() if ch.isalnum())
+    return name, str(pkg.get("version") or "")
+
+
+def _merge_duplicate_packages(packages: list) -> list:
+    merged: dict[tuple, dict] = {}
+    for pkg in packages or []:
+        if not isinstance(pkg, dict) or not pkg.get("name"):
+            continue
+        key = _package_key(pkg)
+        if key not in merged:
+            merged[key] = {**pkg, "cve_ids": list(pkg.get("cve_ids") or [])}
+            continue
+        m = merged[key]
+        for cve_id in pkg.get("cve_ids") or []:
+            if cve_id not in m["cve_ids"]:
+                m["cve_ids"].append(cve_id)
+        m["cve_count"] = max(m.get("cve_count") or 0, pkg.get("cve_count") or 0, len(m["cve_ids"]))
+        if _SEVERITY_ORDER.get(pkg.get("max_severity"), 0) > _SEVERITY_ORDER.get(m.get("max_severity"), 0):
+            m["max_severity"] = pkg.get("max_severity")
+    return list(merged.values())
+
+
 def _fix_first(packages: list, vulns_by_id: dict) -> list:
     """Vulnerable software, one entry per package, with the CVEs behind it
     and whether any is known to be used in ransomware -- the "what do I
     patch first" list. Ransomware-linked packages first, then by worst
     CVSS, then by number of CVEs."""
     out = []
-    for pkg in packages or []:
-        if not isinstance(pkg, dict) or not pkg.get("name"):
-            continue
+    for pkg in _merge_duplicate_packages(packages):
         cves = []
         for cve_id in pkg.get("cve_ids") or []:
             v = vulns_by_id.get(cve_id, {})

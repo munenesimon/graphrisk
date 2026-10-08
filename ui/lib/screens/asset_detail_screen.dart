@@ -108,7 +108,7 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
             ],
           ]),
         ),
-        if (status != null && status.isNotEmpty) _StatusBadge(status: status),
+        if (status != null && status.isNotEmpty) _StatusBadge(status: status, lastSeen: lastSeen),
       ]),
       const SizedBox(height: 10),
       Wrap(spacing: 6, runSpacing: 6, children: [
@@ -180,6 +180,15 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
         icon: Icons.checklist_rtl,
         color: kAccent,
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          if (p.recommendations.any((a) => a['category'] == 'patch'))
+            const Padding(
+              padding: EdgeInsets.only(bottom: 10),
+              child: Text(
+                'To patch: install the vendor\'s latest version, or uninstall software you don\'t need, '
+                'then re-run the connector to confirm the findings are gone.',
+                style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4),
+              ),
+            ),
           for (final a in shown) _ActionRow(action: a),
           if (p.recommendations.length > 5)
             TextButton(
@@ -594,10 +603,17 @@ class _Note extends StatelessWidget {
 
 class _StatusBadge extends StatelessWidget {
   final String status;
-  const _StatusBadge({required this.status});
+  final String? lastSeen;
+  const _StatusBadge({required this.status, this.lastSeen});
 
   @override
   Widget build(BuildContext context) {
+    // A status is only as current as the last connector report: after a day
+    // without one, say what it *was* rather than implying it's live.
+    final seen = lastSeen == null ? null : DateTime.tryParse(lastSeen!);
+    if (seen != null && DateTime.now().difference(seen.toLocal()).inHours >= 24) {
+      return _Chip(text: 'Last reported ${status.toLowerCase()}', color: Colors.white54);
+    }
     final s = status.toLowerCase();
     final Color color = (s == 'online' || s == 'active' || s == 'running')
         ? kGreen
@@ -870,9 +886,20 @@ Color _priorityColor(String p) => switch (p) {
       _ => Colors.white54,
     };
 
-class _ActionRow extends StatelessWidget {
+class _ActionRow extends StatefulWidget {
   final Map<String, dynamic> action;
   const _ActionRow({required this.action});
+
+  @override
+  State<_ActionRow> createState() => _ActionRowState();
+}
+
+class _ActionRowState extends State<_ActionRow> {
+  // Steps like CIS checks come as "what — how"; the "how" (Group Policy
+  // paths etc.) is long, so it's shown on request.
+  bool _showHow = false;
+
+  Map<String, dynamic> get action => widget.action;
 
   @override
   Widget build(BuildContext context) {
@@ -915,8 +942,26 @@ class _ActionRow extends StatelessWidget {
             padding: const EdgeInsets.only(top: 4, left: 4),
             child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('•  ', style: TextStyle(color: Colors.white38, fontSize: 12)),
-              Expanded(child: Text(step, style: const TextStyle(color: Colors.white60, fontSize: 12, height: 1.4))),
+              Expanded(
+                child: Text(
+                  _showHow || !step.contains(' — ') ? step : step.split(' — ').first,
+                  style: const TextStyle(color: Colors.white60, fontSize: 12, height: 1.4),
+                ),
+              ),
             ]),
+          ),
+        if (steps.any((st) => st.contains(' — ')))
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(0, 28),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              onPressed: () => setState(() => _showHow = !_showHow),
+              child: Text(_showHow ? 'Hide how to fix' : 'Show how to fix', style: const TextStyle(fontSize: 12)),
+            ),
           ),
         if (helps != null || source != null) ...[
           const SizedBox(height: 6),
