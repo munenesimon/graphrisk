@@ -119,6 +119,12 @@ MAX_FAILED_CHECKS_PER_POLICY = 10
 PROTECTION_PROCESSES: dict[str, tuple[str, str]] = {
     # Windows
     "msmpeng.exe":          ("Microsoft Defender Antivirus", "Antivirus"),
+    # Defender companions. MsMpEng itself is a protected process, which
+    # Wazuh's inventory can't open on some machines, so it may be missing
+    # from the list while these (which only run alongside it) are present.
+    "mpdefendercoreservice.exe": ("Microsoft Defender Antivirus", "Antivirus"),
+    "nissrv.exe":           ("Microsoft Defender Antivirus", "Antivirus"),
+    "defendersessionhelper.exe": ("Microsoft Defender Antivirus", "Antivirus"),
     "mssense.exe":          ("Microsoft Defender for Endpoint", "EDR"),
     "csfalconservice.exe":  ("CrowdStrike Falcon", "EDR"),
     "sentinelagent.exe":    ("SentinelOne", "EDR"),
@@ -148,6 +154,12 @@ PROTECTION_PROCESSES: dict[str, tuple[str, str]] = {
     "esets_daemon":         ("ESET", "Antivirus"),
     "clamd":                ("ClamAV", "Antivirus"),
 }
+
+# Core Windows processes that are always running and, like antivirus
+# engines, protected. When none of them is in a Windows device's process
+# list, the inventory can't see protected processes at all -- so "no
+# antivirus process seen" proves nothing and must not count as "not running".
+WINDOWS_PROTECTED_CORE = frozenset({"csrss.exe", "services.exe", "smss.exe"})
 
 # Installed-package names that mean a protection product is on the device.
 # Whole-word patterns, so e.g. "ESET" doesn't match "reset".
@@ -472,7 +484,7 @@ class WazuhAdapter(BaseConnector):
             str(p.get("name")) for p in packages.get("affected_items") or [] if p.get("name")
         ]
         defender = self._defender_policy(agent_id) if (platform or "").lower() == "windows" else None
-        protection = detect_protection(process_names, package_names, defender)
+        protection = detect_protection(process_names, package_names, defender, platform=platform)
         if protection:
             prof["protection"] = protection
 
@@ -704,7 +716,7 @@ class WazuhAdapter(BaseConnector):
         if unchecked and (protected or unprotected):
             detail += f"; {unchecked} couldn't be checked for antivirus (counted as reporting only)"
         elif unchecked:
-            detail += " (running processes unavailable, so antivirus wasn't checked)"
+            detail += " (couldn't confirm antivirus from the running processes, so it wasn't checked)"
 
         discovered_assets = []
         for a in agents:
@@ -873,7 +885,7 @@ class WazuhAdapter(BaseConnector):
 
 
 def detect_protection(process_names: set[str] | None, package_names: list[str] | None,
-                      defender_policy: dict | None = None) -> dict | None:
+                      defender_policy: dict | None = None, platform: str | None = None) -> dict | None:
     """
     What endpoint protection is present on one device, as the profile's
     "protection" section. Pure function over data syscollector already
@@ -881,7 +893,9 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
 
     ``running`` / ``running_products`` are internal markers for the EDR
     check (True: a protection process is running; False: processes were
-    read and none is; absent: processes unknown). _agent_profile leaves
+    read and none is; absent: processes unknown, or -- on Windows -- the
+    list visibly lacks protected processes, so an antivirus engine could be
+    running unseen). _agent_profile leaves
     them out of the stored profile -- they're never shown on the page.
 
     Returns None when there's no evidence either way (nothing could be read).
@@ -895,6 +909,13 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
         if hit and hit[0] not in running:
             running[hit[0]] = (hit[1], proc)
 
+    # Can the process list rule an antivirus out? Not if it's unknown, and
+    # not on a Windows device whose list is missing every protected core
+    # process -- the engine would be hidden the same way.
+    hidden = (process_names is not None and (platform or "").lower() == "windows"
+              and not (process_names & WINDOWS_PROTECTED_CORE))
+    can_rule_out = process_names is not None and not hidden
+
     installed: list[str] = []
     for pkg in package_names or ():
         for pattern, product in PROTECTION_PACKAGES:
@@ -905,7 +926,7 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
 
     detected = [f"{product} ({kind}) — running ({proc})" for product, (kind, proc) in running.items()]
     detected += [
-        f"{product} — installed, not seen running" if process_names is not None
+        f"{product} — installed, not seen running" if can_rule_out
         else f"{product} — installed (couldn't check whether it's running)"
         for product in installed
     ]
@@ -913,9 +934,11 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
     if running:
         status = "Active"
     elif installed:
-        status = "Installed, not seen running" if process_names is not None else "Installed"
-    elif process_names is not None:
+        status = "Installed, not seen running" if can_rule_out else "Installed"
+    elif can_rule_out:
         status = "Not detected"
+    elif hidden:
+        status = "Not confirmed"
     else:
         status = None
 
@@ -932,7 +955,10 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
                              "CIS benchmark checks pass")
         if defender_policy.get("gaps"):
             section["policy_gaps"] = list(defender_policy["gaps"])
-    if process_names is not None:
+    if hidden and not running:
+        section["note"] = ("Wazuh can't see Windows protected processes on this device, so a "
+                           "running antivirus may not show up here.")
+    if running or can_rule_out:
         section["running"] = bool(running)
         section["running_products"] = list(running)
     return section or None

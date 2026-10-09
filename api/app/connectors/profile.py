@@ -39,7 +39,7 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "software": ("installed_count", "vulnerable_packages", "hotfixes_count", "recent_hotfixes"),
     "vulnerabilities": ("counts_by_severity", "total", "scanner", "last_scanned"),
     "configuration": ("benchmarks",),
-    "protection": ("status", "product", "detected", "policy", "policy_gaps",
+    "protection": ("status", "product", "detected", "note", "policy", "policy_gaps",
                    "last_detection", "detections_count"),
     "ownership": ("assigned_user", "owner_email", "department", "managed", "compliant"),
     "cloud": ("provider", "region", "account", "instance_type", "security_groups",

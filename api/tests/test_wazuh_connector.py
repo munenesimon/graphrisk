@@ -427,7 +427,7 @@ def test_edr_check_counts_a_reporting_agent_with_antivirus_running_as_covered():
 @responses.activate
 def test_edr_check_does_not_count_a_reporting_agent_without_antivirus():
     with _mock_private_dns():
-        _register_single_windows_agent(["explorer.exe", "wazuh-agent.exe"])
+        _register_single_windows_agent(["csrss.exe", "services.exe", "explorer.exe", "wazuh-agent.exe"])
         result = WazuhAdapter(tenant_id="t", config={
             "api_url": BASE_URL, "username": "u", "password": "p", "verify_ssl": False,
         }).run_check("wazuh_agent_connectivity")
@@ -509,3 +509,44 @@ def test_patching_check_gives_partial_credit_for_a_light_load():
             "wazuh_vulnerability_patching")
     # 4 Medium against a floor of 20 per device x 2 devices.
     assert result.score == 0.9
+
+
+def test_defender_is_recognised_by_its_companion_processes():
+    # MsMpEng.exe is protected and can be missing from Wazuh's list; the
+    # Defender platform processes that run alongside it still show up.
+    section = detect_protection({"lsass.exe", "defendersessionhelper.exe", "explorer.exe"}, [],
+                                platform="windows")
+    assert section["status"] == "Active"
+    assert section["running"] is True
+    assert section["detected"] == [
+        "Microsoft Defender Antivirus (Antivirus) — running (defendersessionhelper.exe)"]
+
+
+def test_hidden_protected_processes_mean_unknown_not_unprotected():
+    # A Windows list with none of the protected core processes can't show an
+    # antivirus engine either -- so nothing found is "not confirmed", and the
+    # EDR check treats it as unchecked rather than unprotected.
+    section = detect_protection({"lsass.exe", "explorer.exe"}, ["AVG Driver Updater"], platform="windows")
+    assert section["status"] == "Not confirmed"
+    assert "running" not in section
+    assert "protected processes" in section["note"]
+    # With the core processes visible, the same result is a real "none running".
+    full = detect_protection({"csrss.exe", "services.exe", "explorer.exe"}, [], platform="windows")
+    assert full["status"] == "Not detected" and full["running"] is False
+    # Linux lists aren't judged by Windows process names.
+    assert detect_protection({"sshd"}, [], platform="ubuntu")["status"] == "Not detected"
+
+
+@responses.activate
+def test_edr_check_counts_hidden_processes_as_reporting_only():
+    with _mock_private_dns():
+        _register_single_windows_agent(["lsass.exe", "explorer.exe"])
+        result = WazuhAdapter(tenant_id="t", config={
+            "api_url": BASE_URL, "username": "u", "password": "p", "verify_ssl": False,
+        }).run_check("wazuh_agent_connectivity")
+
+    assert result.score == 1.0
+    assert "couldn't confirm antivirus from the running processes" in result.detail
+    protection = result.discovered_assets[0]["profile"]["protection"]
+    assert protection["status"] == "Installed"
+    assert protection["detected"] == ["Malwarebytes — installed (couldn't check whether it's running)"]
