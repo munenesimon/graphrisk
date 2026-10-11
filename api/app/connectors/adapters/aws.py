@@ -12,6 +12,7 @@ import boto3
 from datetime import datetime, timezone, timedelta
 
 from ..base import BaseConnector
+from ..checks import no_data_result, share_score
 from ..models import CheckResult, CheckStatus, CheckCategory
 
 SUPPORTED_CHECKS = [
@@ -142,7 +143,12 @@ class AWSAdapter(BaseConnector):
 
         count = len(stale)
         total = len(users)
-        score = round(1.0 - (count / total), 4) if total > 0 else 1.0
+        score = share_score(count, total)
+        if score is None:
+            return no_data_result(
+                check_id="aws_unused_keys", check_name="Unused IAM Access Keys", category=CheckCategory.IAM,
+                source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title="Access Key Management", reason="no IAM users in the account")
 
         return CheckResult(
             check_id="aws_unused_keys",
@@ -266,7 +272,13 @@ class AWSAdapter(BaseConnector):
             })
 
         total = len(instances)
-        score = round(1.0 - exposed_count / total, 4) if total else 1.0
+        score = share_score(exposed_count, total)
+        if score is None:
+            return no_data_result(
+                check_id="aws_ec2_exposure", check_name="EC2 Internet-Exposed Admin Ports",
+                category=CheckCategory.CLOUD_POSTURE, source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title=self.config.get("control_titles", {}).get("aws_ec2_exposure", "Secure Configuration Baseline"),
+                reason=f"no EC2 instances in {self._boto_session.region_name}")
         return CheckResult(
             discovered_assets=discovered,
             check_id="aws_ec2_exposure",

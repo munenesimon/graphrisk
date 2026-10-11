@@ -39,6 +39,7 @@ your graph uses different names.
 from datetime import datetime, timedelta, timezone
 
 from ..base import BaseConnector
+from ..checks import first_run_score, graded_status, no_data_result, open_weight, progress, share_score
 from ..models import CheckResult, CheckStatus, CheckCategory
 from ..profile import group_vulnerable_packages, severity_label
 
@@ -68,6 +69,10 @@ PAGE_LIMIT = 500
 # A host that checked in within this long is shown as "online" on the asset
 # page -- Falcon's host record has a last_seen timestamp, not a live status.
 ONLINE_WITHIN = timedelta(hours=24)
+
+# A sensor silent for longer than this can't vouch for the host's protection
+# now -- the profile says "not confirmed" rather than "Active".
+PROTECTION_CONFIRMED_WITHIN = timedelta(days=7)
 
 # Findings at these severities become Vulnerability nodes / risks, same
 # cutoff as Wazuh's default; every severity still counts toward the
@@ -146,6 +151,9 @@ class CrowdStrikeAdapter(BaseConnector):
             protection_status = "Reduced functionality mode"
         elif h.get("status") == "contained":
             protection_status = "Contained (network isolated)"
+        elif seen_at is None or datetime.now(timezone.utc) - seen_at > PROTECTION_CONFIRMED_WITHIN:
+            # Installed, but silent: its last report can't confirm protection now.
+            protection_status = "Not confirmed (sensor not reporting)"
         else:
             protection_status = "Active"
         mac = (h.get("mac_address") or "").replace("-", ":").lower() or None
@@ -225,7 +233,13 @@ class CrowdStrikeAdapter(BaseConnector):
                 continue
             if seen_at < cutoff:
                 stale += 1
-        score = round(1.0 - (stale / total), 4) if total > 0 else 1.0
+        score = share_score(stale, total)
+        if score is None:
+            return no_data_result(
+                check_id="crowdstrike_stale_sensors", check_name="CrowdStrike Sensor Connectivity",
+                category=CheckCategory.ENDPOINT, source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title=self._control_title("crowdstrike_stale_sensors"),
+                reason="no hosts with a Falcon sensor yet")
 
         return CheckResult(
             # Every Falcon-managed host becomes an asset, with its profile.
@@ -257,7 +271,13 @@ class CrowdStrikeAdapter(BaseConnector):
         hosts = self._fetch_hosts()
         total = len(hosts)
         rfm = sum(1 for h in hosts if h.get("reduced_functionality_mode") == "yes")
-        score = round(1.0 - (rfm / total), 4) if total > 0 else 1.0
+        score = share_score(rfm, total)
+        if score is None:
+            return no_data_result(
+                check_id="crowdstrike_rfm_hosts", check_name="CrowdStrike Reduced Functionality Mode Audit",
+                category=CheckCategory.ENDPOINT, source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title=self._control_title("crowdstrike_rfm_hosts"),
+                reason="no hosts with a Falcon sensor yet")
 
         return CheckResult(
             check_id="crowdstrike_rfm_hosts",
@@ -349,7 +369,18 @@ class CrowdStrikeAdapter(BaseConnector):
         total = len(vulns)
         critical = sum(1 for v in vulns if (v.get("cve") or {}).get("severity") == "CRITICAL")
         discovered_assets = self._spotlight_assets(vulns)
-        score = round(1.0 - (critical / total), 4) if total > 0 else 1.0
+        # Graded, like Wazuh's patching check: every open finding counts,
+        # weighted by severity, and the registry measures progress against the
+        # worst level seen. (The old "critical share of all findings" went UP
+        # when you fixed Lows and left the Criticals.)
+        counts: dict[str, int] = {}
+        for v in vulns:
+            label = severity_label((v.get("cve") or {}).get("severity")) or "Unknown"
+            counts[label] = counts.get(label, 0) + 1
+        devices = len({(v.get("host_info") or {}).get("hostname") for v in vulns
+                       if (v.get("host_info") or {}).get("hostname")})
+        load = open_weight(counts)
+        score = first_run_score(load, devices)
 
         return CheckResult(
             discovered_assets=discovered_assets,
@@ -358,15 +389,13 @@ class CrowdStrikeAdapter(BaseConnector):
             category=CheckCategory.PATCH_MGMT,
             source=self.CONNECTOR_ID,
             tenant_id=self.tenant_id,
-            status=(
-                CheckStatus.PASS if critical == 0 else
-                CheckStatus.WARNING if critical <= 5 else
-                CheckStatus.FAIL
-            ),
+            status=graded_status(score),
             score=score,
             affected_count=critical,
             total_count=total,
-            detail=f"{critical} of {total} open Spotlight findings are CRITICAL severity",
+            detail=(f"{critical} of {total} open Spotlight findings are CRITICAL severity"
+                    + (f", across {devices} host{'s' if devices != 1 else ''}" if devices else "")),
+            raw_data={"progress": progress(load, devices)},
             control_title=self._control_title("crowdstrike_critical_vulnerabilities"),
         )
 

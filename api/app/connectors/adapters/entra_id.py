@@ -6,6 +6,7 @@ are all inherited from BaseConnector. This file contains only what is
 unique to the Microsoft Graph API: endpoints, field names, and check logic.
 """
 from ..base import BaseConnector
+from ..checks import no_data_result, share_score
 from ..models import CheckResult, CheckStatus, CheckCategory
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
@@ -68,7 +69,12 @@ class EntraIDAdapter(BaseConnector):
         total    = len(users)
         mfa_ok   = sum(1 for u in users if u.get("isMfaRegistered", False))
         mfa_fail = total - mfa_ok
-        score    = round(mfa_ok / total, 4) if total > 0 else 0.0
+        score    = share_score(mfa_fail, total)
+        if score is None:
+            return no_data_result(
+                check_id="mfa_enabled", check_name="MFA Enabled Check", category=CheckCategory.IAM,
+                source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title="Multi-Factor Authentication", reason="no users in the directory")
 
         return CheckResult(
             check_id="mfa_enabled",
@@ -106,7 +112,12 @@ class EntraIDAdapter(BaseConnector):
             or u["signInActivity"].get("lastSignInDateTime", "") < cutoff
         ]
         count = len(dormant)
-        score = round(1.0 - (count / len(users)), 4) if users else 1.0
+        score = share_score(count, len(users))
+        if score is None:
+            return no_data_result(
+                check_id="dormant_accounts", check_name="Dormant Account Check", category=CheckCategory.IAM,
+                source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title="Dormant Account Management", reason="no enabled users in the directory")
 
         return CheckResult(
             check_id="dormant_accounts",
@@ -223,8 +234,11 @@ class EntraIDAdapter(BaseConnector):
         ))
         enabled = [d for d in devices if d.get("accountEnabled", True)]
         non_compliant = sum(1 for d in enabled if not d.get("isCompliant"))
+        # An unmanaged device can't be compliant, so it stays counted -- but
+        # the detail says how many of the gaps are "no MDM at all".
+        unmanaged = sum(1 for d in enabled if d.get("isCompliant") is None)
         total = len(enabled)
-        score = round(1.0 - non_compliant / total, 4) if total else 1.0
+        score = share_score(non_compliant, total)
 
         discovered = []
         for d in devices:
@@ -253,6 +267,14 @@ class EntraIDAdapter(BaseConnector):
                 },
             })
 
+        if score is None:
+            return no_data_result(
+                check_id="entra_device_compliance", check_name="Entra ID Device Compliance",
+                category=CheckCategory.ENDPOINT, source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title=self.config.get("control_titles", {}).get(
+                    "entra_device_compliance", "Secure Configuration Baseline"),
+                discovered_assets=discovered, reason="no enabled devices in the directory")
+
         return CheckResult(
             discovered_assets=discovered,
             check_id="entra_device_compliance",
@@ -268,7 +290,8 @@ class EntraIDAdapter(BaseConnector):
             score=score,
             affected_count=non_compliant,
             total_count=total,
-            detail=f"{non_compliant} of {total} enabled devices are not marked compliant",
+            detail=(f"{non_compliant} of {total} enabled devices are not marked compliant"
+                    + (f" ({unmanaged} with no compliance state, e.g. not enrolled in an MDM)" if unmanaged else "")),
             control_title=self.config.get("control_titles", {}).get(
                 "entra_device_compliance", "Secure Configuration Baseline"),
         )

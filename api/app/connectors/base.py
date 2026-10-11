@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from typing import Generator, Optional
 from urllib.parse import urlparse
 
+from .checks import backoff_seconds
 from .models import CheckResult
 
 logger = logging.getLogger(__name__)
@@ -189,8 +190,9 @@ class BaseConnector(ABC):
             try:
                 r = self._session.get(url, headers=headers, params=params, timeout=30)
                 if r.status_code == 429:
-                    wait = int(r.headers.get("Retry-After", 2 ** attempt))
-                    logger.warning(f"Rate limited by {url}. Waiting {wait}s...")
+                    # Retry-After may be seconds or an HTTP date; capped.
+                    wait = backoff_seconds(r, attempt)
+                    logger.warning(f"Rate limited by {url}. Waiting {wait:.0f}s...")
                     time.sleep(wait)
                     continue
                 if r.status_code == 401:
@@ -214,8 +216,7 @@ class BaseConnector(ABC):
             try:
                 r = self._session.post(url, headers=headers, json=json_body, timeout=30)
                 if r.status_code == 429:
-                    wait = int(r.headers.get("Retry-After", 2 ** attempt))
-                    time.sleep(wait)
+                    time.sleep(backoff_seconds(r, attempt))
                     continue
                 r.raise_for_status()
                 return r.json()

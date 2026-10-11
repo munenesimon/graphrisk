@@ -10,6 +10,7 @@ import logging
 from typing import Optional
 
 from .base import BaseConnector, CheckError
+from .checks import PROGRESS_FLOOR_PER_DEVICE
 from .models import CheckResult, CheckStatus
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ class CheckRegistry:
     # A tiny open-issue load shouldn't read as 0% just because it's the worst
     # seen so far: the baseline is at least this much per device (about two
     # critical findings' worth).
-    PROGRESS_FLOOR_PER_DEVICE = 20.0
+    PROGRESS_FLOOR_PER_DEVICE = PROGRESS_FLOOR_PER_DEVICE
 
     def _apply_progress(self, result: CheckResult) -> None:
         """
@@ -90,7 +91,7 @@ class CheckRegistry:
 
         so every issue fixed raises it a little, the risks the control
         mitigates fall with it, and nothing new to fix means full health.
-        The peak is kept on the Control node and only ever rises.
+        The peak is kept per (control, connector) and only ever rises.
         """
         progress = (result.raw_data or {}).get("progress")
         if not isinstance(progress, dict) or not result.control_title:
@@ -104,9 +105,11 @@ class CheckRegistry:
         try:
             from app.graph.connection import run_write
             from app.graph import queries
-            rows = run_write(queries.RECORD_CONTROL_PEAK, {
+            # Baselines are per connector: Wazuh and Qualys count findings
+            # differently, so one's worst level isn't the other's.
+            rows = run_write(queries.RECORD_PROGRESS_PEAK, {
                 "tenant_id": result.tenant_id, "control_title": result.control_title,
-                "open_weight": open_weight,
+                "source": result.source, "open_weight": open_weight,
             }) or []
             if rows and rows[0].get("peak") is not None:
                 peak = max(float(rows[0]["peak"]), open_weight)
@@ -125,6 +128,11 @@ class CheckRegistry:
         """Write a CheckResult to Neo4j, updating the Control and cascading to Risks."""
         if not result.control_title:
             logger.warning(f"CheckResult {result.check_id} has no control_title -- skipping graph write")
+            return
+        if result.status == CheckStatus.SKIPPED:
+            # Nothing was measured (see connectors/checks.py): keep the
+            # control's current health rather than writing an invented score.
+            logger.info(f"{result.source}/{result.check_id}: no data -- control health left unchanged")
             return
         self._apply_progress(result)
         try:

@@ -44,6 +44,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
 from ..base import BaseConnector
+from ..checks import (first_run_score, graded_status, no_data_result, open_weight, progress,
+                      request_with_retry, share_score)
 from ..models import CheckResult, CheckStatus, CheckCategory
 
 SUPPORTED_CHECKS = [
@@ -90,7 +92,10 @@ class QualysAdapter(BaseConnector):
         base_url = self.config.get("base_url", DEFAULT_BASE_URL).rstrip("/")
         headers = {"X-Requested-With": "GraphRisk Connector"}
         auth = (self.config["username"], self.config["password"])
-        r = self._session.get(f"{base_url}{path}", headers=headers, auth=auth, params=params, timeout=60)
+        # Host detection lists can be slow on a big subscription: retry
+        # timeouts, 409 "concurrency limit" style busy answers and 5xx.
+        r = request_with_retry(self._session, "GET", f"{base_url}{path}",
+                               headers=headers, auth=auth, params=params)
         r.raise_for_status()
         return ET.fromstring(r.content)
 
@@ -159,7 +164,14 @@ class QualysAdapter(BaseConnector):
             "/api/2.0/fo/asset/host/", params={"action": "list", "truncation_limit": TRUNCATION_LIMIT}
         )
         total = len(total_root.findall(".//HOST"))
-        score = round(1.0 - (affected / total), 4) if total > 0 else 1.0
+        score = share_score(affected, total)
+        if score is None:
+            return no_data_result(
+                check_id="qualys_critical_vulnerabilities",
+                check_name="Qualys Critical (Severity 5) Vulnerability Exposure",
+                category=CheckCategory.PATCH_MGMT, source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title=self._control_title("qualys_critical_vulnerabilities"),
+                reason="no hosts in the Qualys subscription")
 
         return CheckResult(
             check_id="qualys_critical_vulnerabilities",
@@ -205,7 +217,13 @@ class QualysAdapter(BaseConnector):
                 continue
             if scanned_at < cutoff:
                 stale += 1
-        score = round(1.0 - (stale / total), 4) if total > 0 else 1.0
+        score = share_score(stale, total)
+        if score is None:
+            return no_data_result(
+                check_id="qualys_stale_scans", check_name="Qualys Scan Freshness",
+                category=CheckCategory.PATCH_MGMT, source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title=self._control_title("qualys_stale_scans"),
+                reason="no hosts in the Qualys subscription")
 
         return CheckResult(
             # Every host in the subscription becomes an asset, with its profile.
@@ -269,11 +287,14 @@ class QualysAdapter(BaseConnector):
 
         # Confirmed Severity 4-5 findings per host, for the device profile.
         profiles = []
-        for h in root.findall(".//HOST"):
+        fleet_counts: dict[str, int] = {}
+        hosts = root.findall(".//HOST")
+        for h in hosts:
             counts: dict[str, int] = {}
             for d in h.findall(".//DETECTION"):
                 label = _SEVERITY_LABELS.get(self._text(d, "SEVERITY") or "", "Unknown")
                 counts[label] = counts.get(label, 0) + 1
+                fleet_counts[label] = fleet_counts.get(label, 0) + 1
             if not counts:
                 continue
             profiles.append({
@@ -287,6 +308,15 @@ class QualysAdapter(BaseConnector):
                 }},
             })
 
+        # Graded, like Wazuh's patching check: every confirmed finding counts,
+        # weighted by severity, and the registry turns the load into progress
+        # against the worst level seen -- so fixing one Critical on a host
+        # that still has others still moves the score.
+        load = open_weight(fleet_counts)
+        devices = len(hosts)
+        score = first_run_score(load, devices)
+        breakdown = ", ".join(f"{fleet_counts[k]} {k.lower()}" for k in ("Critical", "High")
+                              if fleet_counts.get(k))
         return CheckResult(
             discovered_assets=profiles,
             check_id="qualys_confirmed_high_severity",
@@ -294,10 +324,12 @@ class QualysAdapter(BaseConnector):
             category=CheckCategory.PATCH_MGMT,
             source=self.CONNECTOR_ID,
             tenant_id=self.tenant_id,
-            status=CheckStatus.PASS if confirmed == 0 else CheckStatus.WARNING if confirmed <= 5 else CheckStatus.FAIL,
-            score=1.0 if confirmed == 0 else 0.6 if confirmed <= 5 else 0.2,
+            status=graded_status(score),
+            score=score,
             affected_count=confirmed,
             total_count=confirmed,
-            detail=f"{confirmed} vulnerabilities are Confirmed (not just Potential) at Severity 4-5",
+            detail=(f"{confirmed} vulnerabilities are Confirmed (not just Potential) at Severity 4-5"
+                    + (f" ({breakdown}) across {devices} host{'s' if devices != 1 else ''}" if breakdown else "")),
+            raw_data={"progress": progress(load, devices)},
             control_title=self._control_title("qualys_confirmed_high_severity"),
         )

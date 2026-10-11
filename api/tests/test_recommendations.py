@@ -155,7 +155,7 @@ def _patch_result(open_weight, devices=1):
 def test_each_resolved_finding_raises_control_health(fake_graph):
     # The worst load ever seen for this control was 1697 (the laptop's first scan).
     fake_graph.write.side_effect = lambda q, p=None: (
-        [{"peak": 1697.0}] if q == graph_queries.RECORD_CONTROL_PEAK else [])
+        [{"peak": 1697.0}] if q == graph_queries.RECORD_PROGRESS_PEAK else [])
     reg = CheckRegistry()
 
     first = _patch_result(1697.0)
@@ -175,6 +175,6 @@ def test_each_resolved_finding_raises_control_health(fake_graph):
 def test_progress_baseline_is_recorded_per_tenant_and_control(fake_graph):
     fake_graph.write.side_effect = lambda q, p=None: []
     CheckRegistry()._apply_progress(_patch_result(12.0))
-    calls = [c.args for c in fake_graph.write.call_args_list if c.args[0] == graph_queries.RECORD_CONTROL_PEAK]
+    calls = [c.args for c in fake_graph.write.call_args_list if c.args[0] == graph_queries.RECORD_PROGRESS_PEAK]
     assert calls[0][1] == {"tenant_id": "test", "control_title": "Vulnerability & Patch Management",
-                           "open_weight": 12.0}
+                           "source": "wazuh", "open_weight": 12.0}

@@ -131,6 +131,16 @@ def _protection_actions(profile: Mapping, risks: list) -> list[dict]:
                       "Re-run the connector to confirm it is detected as running."],
             "source": src, "helps": _helps("protection", risks),
         })
+    elif status and status.lower().startswith("reduced functionality"):
+        out.append({
+            "priority": "high", "category": "protection",
+            "title": f"Restore full protection in {f.get('product') or 'the endpoint agent'}",
+            "detail": ("The sensor is in reduced functionality mode: installed and reporting, but "
+                       "with prevention and detection limited."),
+            "steps": ["Check the sensor version supports this OS/kernel and is licensed.",
+                      "Update the sensor or OS so it leaves reduced functionality mode, then re-run the connector."],
+            "source": src, "helps": _helps("protection", risks),
+        })
     gaps = [g for g in f.get("policy_gaps") or [] if g]
     if gaps:
         out.append({

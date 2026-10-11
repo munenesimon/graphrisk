@@ -59,6 +59,8 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 
 from ..base import BaseConnector, _assert_safe_url
+from ..checks import (PROGRESS_FLOOR_PER_DEVICE, SEVERITY_WEIGHTS, first_run_score,
+                      open_weight as shared_open_weight, progress)
 from ..models import CheckResult, CheckStatus, CheckCategory
 from ..profile import group_vulnerable_packages
 
@@ -186,8 +188,9 @@ PROTECTION_PACKAGES: tuple[tuple[str, str], ...] = (
 # Vulnerability patching: how much one open finding of each severity counts
 # toward the patch-management load (Critical ≈ 10 Mediums), and the smallest
 # baseline per device so a handful of findings isn't scored as 0%.
-PATCH_SEVERITY_WEIGHTS = {"Critical": 10.0, "High": 4.0, "Medium": 1.0, "Low": 0.25}
-PATCH_FLOOR_PER_DEVICE = 20.0
+# Shared with every vulnerability check (see connectors/checks.py).
+PATCH_SEVERITY_WEIGHTS = {s.capitalize(): w for s, w in SEVERITY_WEIGHTS.items()}
+PATCH_FLOOR_PER_DEVICE = PROGRESS_FLOOR_PER_DEVICE
 
 # Processes / packages fetched per agent for the check above. Generous --
 # a busy Windows laptop runs a few hundred processes.
@@ -779,9 +782,8 @@ class WazuhAdapter(BaseConnector):
         # moves the score -- CheckRegistry turns this into progress against
         # the worst load seen (see _apply_progress). Until then, a
         # no-history estimate.
-        open_weight = sum(PATCH_SEVERITY_WEIGHTS[s] * n for s, n in by_sev.items())
-        baseline = max(open_weight, PATCH_FLOOR_PER_DEVICE * total)
-        score = round(1.0 - open_weight / baseline, 4) if baseline else 1.0
+        open_weight = shared_open_weight(by_sev)
+        score = first_run_score(open_weight, total)
         return CheckResult(
             check_id="wazuh_vulnerability_patching",
             check_name="Wazuh Vulnerability Patching",
@@ -800,7 +802,7 @@ class WazuhAdapter(BaseConnector):
                     f"{by_sev['Low']} low findings open across {total} scanned device{'s' if total != 1 else ''}; "
                     f"{clean} with no Critical or High"),
             control_title=self._control_title("wazuh_vulnerability_patching"),
-            raw_data={"progress": {"open_weight": open_weight, "devices": total}},
+            raw_data={"progress": progress(open_weight, total)},
         )
 
     def _check_sca_compliance(self) -> CheckResult:

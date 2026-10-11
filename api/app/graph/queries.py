@@ -158,6 +158,21 @@ SET_RISK_APPETITE = """
 # Progress-based control health (see CheckRegistry._apply_progress): remember
 # the worst open-issue load a check has reported for this control, so later
 # runs can score how much of it has been resolved.
+# Worst open-issue load seen per (control, connector), for progress-based
+# health (CheckRegistry._apply_progress). Only ever rises. The first Wazuh
+# baseline carries over the control-level peak earlier versions kept.
+RECORD_PROGRESS_PEAK = """
+    OPTIONAL MATCH (c:Control {title: $control_title, tenant_id: $tenant_id})
+    WITH CASE WHEN $source = 'wazuh' THEN coalesce(c.peak_open_weight, 0.0) ELSE 0.0 END AS legacy
+    MERGE (b:ProgressBaseline {tenant_id: $tenant_id, control_title: $control_title, source: $source})
+    ON CREATE SET b.peak_open_weight = CASE WHEN legacy > $open_weight THEN legacy ELSE $open_weight END,
+                  b.created_at = datetime()
+    ON MATCH SET b.peak_open_weight = CASE WHEN b.peak_open_weight < $open_weight
+                                           THEN $open_weight ELSE b.peak_open_weight END
+    SET b.updated_at = datetime()
+    RETURN b.peak_open_weight AS peak
+"""
+
 RECORD_CONTROL_PEAK = """
     MATCH (c:Control {title: $control_title, tenant_id: $tenant_id})
     SET c.peak_open_weight = CASE

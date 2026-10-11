@@ -10,6 +10,7 @@ BaseConnector\'s freshness contract, and _get()/_paginate() are reused
 directly since Okta is a standard REST + JSON API like Entra ID.
 """
 from ..base import BaseConnector
+from ..checks import no_data_result, request_with_retry, share_score
 from ..models import CheckResult, CheckStatus, CheckCategory
 
 SUPPORTED_CHECKS = [
@@ -20,8 +21,10 @@ SUPPORTED_CHECKS = [
     "okta_device_assurance",
 ]
 
-# Okta device diskEncryptionType values that mean "not encrypted".
-_UNENCRYPTED = {None, "", "NONE"}
+# Okta device diskEncryptionType values that mean "not encrypted". A device
+# that doesn't report the field at all is unknown, not unencrypted -- it's
+# left out of the score and counted separately in the detail line.
+_UNENCRYPTED = {"NONE"}
 
 
 class OktaAdapter(BaseConnector):
@@ -53,20 +56,14 @@ class OktaAdapter(BaseConnector):
         a future BaseConnector revision could parameterize the auth scheme
         to let all three adapters share one HTTP path.
         """
-        import time
         org_url = self.config["org_url"].rstrip("/")
         url = f"{org_url}{path}"
         headers = {"Authorization": f"SSWS {self._token}", "Accept": "application/json"}
-
-        for attempt in range(3):
-            r = self._session.get(url, headers=headers, params=params, timeout=30)
-            if r.status_code == 429:
-                wait = int(r.headers.get("X-Rate-Limit-Reset", 2 ** attempt))
-                time.sleep(max(wait, 1))
-                continue
-            r.raise_for_status()
-            return r.json()
-        raise RuntimeError(f"Okta request failed after retries: {url}")
+        # Shared retry: timeouts, 429 and 5xx. Okta's X-Rate-Limit-Reset is
+        # an epoch timestamp; the old code slept for that many *seconds*.
+        r = request_with_retry(self._session, "GET", url, headers=headers, params=params)
+        r.raise_for_status()
+        return r.json()
 
     def supported_checks(self) -> list[str]:
         return SUPPORTED_CHECKS
@@ -92,7 +89,12 @@ class OktaAdapter(BaseConnector):
         # a real implementation would call /api/v1/users/{id}/factors per user.
         enrolled = sum(1 for u in users if u.get("credentials", {}).get("provider", {}))
         not_enrolled = total - enrolled
-        score = round(enrolled / total, 4) if total > 0 else 0.0
+        score = share_score(not_enrolled, total)
+        if score is None:
+            return no_data_result(
+                check_id="okta_mfa_enrollment", check_name="Okta MFA Enrollment Check",
+                category=CheckCategory.IAM, source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title="Multi-Factor Authentication", reason="no users in the Okta org")
 
         return CheckResult(
             check_id="okta_mfa_enrollment",
@@ -126,7 +128,12 @@ class OktaAdapter(BaseConnector):
         ]
         count = len(dormant)
         total = len(users)
-        score = round(1.0 - (count / total), 4) if total > 0 else 1.0
+        score = share_score(count, total)
+        if score is None:
+            return no_data_result(
+                check_id="okta_dormant_accounts", check_name="Okta Dormant Account Check",
+                category=CheckCategory.IAM, source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title="Dormant Account Management", reason="no active users in the Okta org")
 
         return CheckResult(
             check_id="okta_dormant_accounts",
@@ -202,10 +209,16 @@ class OktaAdapter(BaseConnector):
         """
         devices = self._okta_get("/api/v1/devices", params={"expand": "user", "limit": 200})
         active = [d for d in devices if d.get("status") == "ACTIVE"]
-        unencrypted = sum(1 for d in active
-                          if (d.get("profile") or {}).get("diskEncryptionType") in _UNENCRYPTED)
-        total = len(active)
-        score = round(1.0 - unencrypted / total, 4) if total else 1.0
+        # Only devices that report an encryption state count.
+        reporting = [d for d in active if (d.get("profile") or {}).get("diskEncryptionType")]
+        unknown = len(active) - len(reporting)
+        unencrypted = sum(1 for d in reporting
+                          if str((d.get("profile") or {}).get("diskEncryptionType")).upper() in _UNENCRYPTED)
+        total = len(reporting)
+        score = share_score(unencrypted, total)
+        unknown_note = (f"; {unknown} active device{'s' if unknown != 1 else ''} "
+                        f"{'don' if unknown != 1 else 'doesn'}'t report encryption (not counted)"
+                        if unknown else "")
 
         discovered = []
         for d in devices:
@@ -242,6 +255,15 @@ class OktaAdapter(BaseConnector):
                 },
             })
 
+        control = self.config.get("control_titles", {}).get("okta_device_assurance", "Secure Configuration Baseline")
+        if score is None:
+            return no_data_result(
+                check_id="okta_device_assurance", check_name="Okta Device Disk Encryption",
+                category=CheckCategory.ENDPOINT, source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title=control, discovered_assets=discovered,
+                reason=("no active devices report their encryption state" if active
+                        else "no active devices registered with Okta Verify"))
+
         return CheckResult(
             discovered_assets=discovered,
             check_id="okta_device_assurance",
@@ -257,7 +279,7 @@ class OktaAdapter(BaseConnector):
             score=score,
             affected_count=unencrypted,
             total_count=total,
-            detail=f"{unencrypted} of {total} active devices do not report disk encryption",
+            detail=f"{unencrypted} of {total} active devices are not disk-encrypted{unknown_note}",
             control_title=self.config.get("control_titles", {}).get(
                 "okta_device_assurance", "Secure Configuration Baseline"),
         )
