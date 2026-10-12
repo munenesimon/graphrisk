@@ -28,14 +28,29 @@ class _FrameworkDetailScreenState extends State<FrameworkDetailScreen> {
   @override
   void initState() { super.initState(); _load(); }
 
+  // The router can reuse this screen for a different framework (going
+  // straight from one framework's page to another's). Start again for the
+  // new one, so the old framework's requirements never show under the new
+  // name.
+  @override
+  void didUpdateWidget(covariant FrameworkDetailScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.frameworkId != widget.frameworkId) {
+      setState(() { _data = null; _filter = null; });
+      _load();
+    }
+  }
+
   Future<void> _load() async {
+    final requestedId = widget.frameworkId;
     if (_data == null) setState(() { _loading = true; _error = null; });
     try {
-      final data = await ApiService.getFrameworkRequirements(widget.frameworkId);
-      if (!mounted) return;
+      final data = await ApiService.getFrameworkRequirements(requestedId);
+      // Drop a reply for a framework we've since navigated away from.
+      if (!mounted || requestedId != widget.frameworkId) return;
       setState(() { _data = data; _loading = false; _error = null; });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || requestedId != widget.frameworkId) return;
       if (e is AuthException) return;
       setState(() { _error = e.toString().replaceFirst('Exception: ', ''); _loading = false; });
     }

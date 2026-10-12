@@ -1,3 +1,4 @@
+import re
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends
@@ -7,6 +8,24 @@ from app.graph import queries
 from app.auth.jwt_auth import get_current_user, CurrentUser
 
 router = APIRouter()
+
+# Reading order for reference prefixes. Plain clause numbers come first (ISO
+# 4.1-10.2 before Annex A); SOC 2 lists the common criteria (CC) before the
+# optional categories. Anything else sorts alphabetically after these.
+_PREFIX_ORDER = {"": 0, "CC": 0, "A": 1, "C": 2, "PI": 3, "P": 4}
+
+
+def requirement_sort_key(reference: str | None) -> tuple:
+    """Natural order for requirement references, so 4.2 comes before 10.1
+    and A.5.9 before A.5.10 (plain text sort gets both wrong)."""
+    ref = (reference or "").strip()
+    m = re.match(r"[A-Za-z]*", ref)
+    prefix = m.group(0).upper() if m else ""
+    rest = ref[len(prefix):]
+    parts = tuple((0, int(t), "") if t.isdigit() else (1, 0, t.lower())
+                  for t in re.findall(r"\d+|[A-Za-z]+", rest))
+    return (_PREFIX_ORDER.get(prefix, 5), prefix, parts)
+
 
 # Who may record (self-declare) that a requirement is in place.
 ATTESTATION_EDITORS = {"owner", "admin"}
@@ -74,6 +93,7 @@ async def framework_requirements(framework_id: str, user: CurrentUser = Depends(
                      {"framework_id": framework_id, "tenant_id": user.graph_tenant_id}) or []
     if not rows:
         raise HTTPException(status_code=404, detail=f"Framework {framework_id} not found")
+    rows = sorted(rows, key=lambda r: requirement_sort_key(r.get("control_reference")))
     summary_row = {"framework_id": framework_id, "framework": rows[0].get("framework"),
                    "applies": rows[0].get("applies"), "total": len(rows), "score_sum": 0.0}
     for r in rows:

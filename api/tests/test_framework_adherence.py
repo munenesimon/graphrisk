@@ -119,3 +119,24 @@ def test_owner_can_remove_an_attestation(client, fake_graph, as_user):
     assert resp.status_code == 200
     assert fake_graph.write.call_args[0] == (app_queries.DELETE_ATTESTATION,
                                              {"tenant_id": "acme", "requirement_id": "R1"})
+
+
+def test_requirement_references_sort_naturally():
+    from app.api.v1.frameworks import requirement_sort_key
+    iso = ["A.5.10", "10.1", "A.5.9", "4.1", "9.3", "A.8.1"]
+    assert sorted(iso, key=requirement_sort_key) == ["4.1", "9.3", "10.1", "A.5.9", "A.5.10", "A.8.1"]
+    soc2 = ["P1.1", "A1.1", "CC10.1", "PI1.1", "CC2.1", "C1.1", "CC1.1"]
+    assert sorted(soc2, key=requirement_sort_key) == ["CC1.1", "CC2.1", "CC10.1", "A1.1", "C1.1", "PI1.1", "P1.1"]
+
+
+def test_requirements_are_returned_in_reading_order(client, fake_graph, as_user):
+    as_user(graph_tenant_id="acme")
+    def req(ref):
+        return {"framework": "ISO_27001", "applies": False, "id": ref, "control_reference": ref,
+                "title": ref, "domain": None, "summary": None, "official_url": None,
+                "requirement_type": "process", "controls": [], "status": "no_evidence",
+                "score": 0.0, "attestation": None}
+    fake_graph.query.return_value = [req("10.1"), req("A.5.1"), req("4.1")]
+    resp = client.get("/api/v1/frameworks/ISO_27001_2022/requirements")
+    assert resp.status_code == 200
+    assert [r["control_reference"] for r in resp.json()["requirements"]] == ["4.1", "10.1", "A.5.1"]
