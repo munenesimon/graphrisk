@@ -198,6 +198,17 @@ MAX_PROCESSES_PER_AGENT = 1000
 MAX_PACKAGES_PER_AGENT = 2000
 MAX_DEFENDER_POLICY_GAPS = 5
 
+# CIS benchmark checks for optional Windows features that only apply where
+# the feature is turned on. Microsoft Defender Application Guard is optional
+# (and deprecated); Wazuh can't see whether it's enabled, so these checks
+# are neither a pass nor a fail for the device.
+FEATURE_DEPENDENT_CHECKS = ("application guard",)
+
+
+def _feature_dependent(title: str) -> bool:
+    t = (title or "").lower()
+    return any(k in t for k in FEATURE_DEPENDENT_CHECKS)
+
 # Markers detect_protection adds for the EDR check; never stored.
 _INTERNAL_PROFILE_KEYS = frozenset({"running", "running_products"})
 
@@ -333,8 +344,12 @@ class WazuhAdapter(BaseConnector):
         if not agent_ids:
             return {}
         severities = self._min_vulnerability_severities()
+        self._vuln_fetch_complete = False
         resp = self._indexer_search("wazuh-states-vulnerabilities-*", {
             "size": MAX_VULNERABILITIES_PER_RUN,
+            # The real total, not capped at 10,000 -- so we can tell whether
+            # MAX_VULNERABILITIES_PER_RUN cut the list short.
+            "track_total_hits": True,
             "_source": [
                 "agent.id", "vulnerability.id", "vulnerability.severity",
                 "vulnerability.score.base", "vulnerability.description",
@@ -377,6 +392,17 @@ class WazuhAdapter(BaseConnector):
             if package.get("name"):
                 entry["package"] = {"name": package.get("name"), "version": package.get("version")}
             by_agent.setdefault(agent_id, []).append(entry)
+        # Complete only when every matching finding came back. A truncated
+        # list must never be read as "the rest were fixed" (see the
+        # registry's reconcile step).
+        hits = resp.get("hits") or {}
+        total = hits.get("total")
+        total = total.get("value") if isinstance(total, dict) else total
+        returned = len(hits.get("hits") or [])
+        self._vuln_fetch_complete = isinstance(total, int) and total <= returned
+        if not self._vuln_fetch_complete:
+            logger.warning(f"Wazuh returned {returned} of {total} vulnerability findings; "
+                           "findings not seen this run are kept until a complete fetch")
         return by_agent
 
     def _fetch_severity_counts(self, agent_ids: list[str]) -> dict[str, dict[str, int]]:
@@ -503,7 +529,7 @@ class WazuhAdapter(BaseConnector):
         except Exception as e:
             logger.debug(f"Wazuh SCA policies for agent {agent_id} unavailable: {e}")
             return None
-        passed, failed, gaps = 0, 0, []
+        passed, failed, gaps, conditional = 0, 0, [], 0
         for policy in policies:
             policy_id = policy.get("policy_id")
             if not policy_id:
@@ -519,14 +545,22 @@ class WazuhAdapter(BaseConnector):
                 if "defender" not in title.lower():
                     continue
                 result = str(c.get("result") or "").lower()
+                if _feature_dependent(title):
+                    # Settings for an optional feature (Application Guard)
+                    # only matter where it's turned on -- Wazuh can't tell
+                    # whether it is, so don't count them either way.
+                    if result in ("passed", "failed"):
+                        conditional += 1
+                    continue
                 if result == "passed":
                     passed += 1
                 elif result == "failed":
                     failed += 1
                     gaps.append(title)
-        if passed + failed == 0:
+        if passed + failed == 0 and not conditional:
             return None
-        return {"passed": passed, "failed": failed, "gaps": gaps[:MAX_DEFENDER_POLICY_GAPS]}
+        return {"passed": passed, "failed": failed, "gaps": gaps[:MAX_DEFENDER_POLICY_GAPS],
+                "not_counted": conditional}
 
     def _agent_profile(self, agent: dict, vulns: list[dict], severity_counts: dict | None,
                        inventory: dict | None) -> dict:
@@ -594,7 +628,7 @@ class WazuhAdapter(BaseConnector):
         return [
             {"title": c.get("title"), "remediation": c.get("remediation")}
             for c in (data.get("data") or {}).get("affected_items") or []
-            if c.get("title")
+            if c.get("title") and not _feature_dependent(c.get("title"))
         ]
 
     def _control_title(self, check_id: str) -> str:
@@ -674,6 +708,7 @@ class WazuhAdapter(BaseConnector):
 
         vulns_by_agent: dict[str, list[dict]] = {}
         severity_counts: dict[str, dict[str, int]] = {}
+        vulns_complete = False
         if self._effective_indexer_url():
             try:
                 severity_counts = self._fetch_severity_counts([a.get("id") for a in agents])
@@ -681,6 +716,7 @@ class WazuhAdapter(BaseConnector):
                 logger.warning(f"Wazuh indexer severity counts unavailable, continuing without them: {e}")
             try:
                 vulns_by_agent = self._fetch_vulnerabilities([a.get("id") for a in agents])
+                vulns_complete = getattr(self, "_vuln_fetch_complete", False)
             except Exception as e:
                 # Deliberately broad -- bad indexer creds, unreachable host,
                 # a manager that isn't on 4.8+, a missing index... all of
@@ -727,6 +763,12 @@ class WazuhAdapter(BaseConnector):
             agent_vulns = vulns_by_agent.get(a.get("id"))
             if agent_vulns:
                 asset["vulnerabilities"] = agent_vulns
+            if vulns_complete and a.get("status") == "active":
+                # Every current finding for this device is in the list
+                # above (possibly none) -- lets the registry drop findings
+                # that have since been patched. Not for a disconnected
+                # agent: its last scan may be long out of date.
+                asset["vulnerability_scan_complete"] = True
             asset["profile"] = self._agent_profile(
                 a, agent_vulns or [], severity_counts.get(a.get("id")), inventory.get(a.get("id")))
             discovered_assets.append(asset)
@@ -953,8 +995,12 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
         section["detected"] = detected
     if defender_policy:
         checked = defender_policy["passed"] + defender_policy["failed"]
-        section["policy"] = (f"Microsoft Defender settings: {defender_policy['passed']} of {checked} "
-                             "CIS benchmark checks pass")
+        skipped = defender_policy.get("not_counted") or 0
+        skipped_text = (f" ({skipped} Application Guard setting{'s' if skipped != 1 else ''} not counted: "
+                        "they only apply where Application Guard is turned on)") if skipped else ""
+        section["policy"] = ((f"Microsoft Defender settings: {defender_policy['passed']} of {checked} "
+                              "CIS benchmark checks pass") if checked else
+                             "Microsoft Defender settings: none of the CIS benchmark checks apply") + skipped_text
         if defender_policy.get("gaps"):
             section["policy_gaps"] = list(defender_policy["gaps"])
     if hidden and not running:

@@ -171,10 +171,13 @@ class CheckRegistry:
         is managing by hand. Vulnerability links, by contrast, are relinked
         on every run regardless of whether the asset was just created or
         already existed -- LINK_VULNERABILITY_TO_ASSET is the same
-        idempotent MERGE the REST endpoint relies on, so a CVE a device is
-        still exposed to simply stays linked; nothing here removes a link
-        for a CVE that stopped showing up in one run's findings, since a
-        transient scan gap shouldn't read as "resolved."
+        idempotent MERGE, now recording which scanner saw it and when, so
+        a CVE a device is still exposed to simply stays linked. A link is
+        only removed when the adapter marks the device's findings as
+        complete (`vulnerability_scan_complete`): then anything the scan no
+        longer reports goes (see RECONCILE_SCANNED_VULNERABILITIES). A
+        failed or truncated fetch never sets that flag, so a transient
+        scan gap can't read as "resolved."
 
         A dict-shaped (real finding detail) vulnerability also goes through
         _ensure_risk_for_finding below when it's Critical/High severity --
@@ -234,11 +237,14 @@ class CheckRegistry:
                         "environment": asset.get("environment", "Production"),
                         "tenant_id": tenant_id,
                     })
-                    # Same onboarding side effects as POST /assets/ -- no-ops
-                    # immediately if vendor/product weren't set on this asset.
-                    run_write(queries.CORRELATE_NEW_ASSET_AGAINST_ALL_VULNERABILITIES, {
-                        "asset_id": asset_id, "tenant_id": tenant_id,
-                    })
+                    # Deliberately NOT the name-based CVE correlation POST
+                    # /assets/ runs (CORRELATE_NEW_ASSET_AGAINST_ALL_
+                    # VULNERABILITIES): it links every CVE whose vendor/product
+                    # merely contains "Microsoft"/"Windows", whatever the
+                    # device's version -- on a fully updated laptop that meant
+                    # 177 CVEs back to 2011 that can't apply to it. A
+                    # connector-discovered device gets exactly the CVEs its
+                    # scanner reports below, nothing guessed.
                     run_write(queries.CASCADE_RISK_ON_NEW_ASSET, {
                         "asset_id": asset_id, "tenant_id": tenant_id,
                     })
@@ -247,6 +253,7 @@ class CheckRegistry:
                 matcher.record(asset_id, name, asset.get("profile"))
                 self._store_profile(asset.get("profile"), asset_id, tenant_id, result)
 
+                seen_cves: list[str] = []
                 for vuln in asset.get("vulnerabilities", []):
                     # A plain CVE id string means "link this if we already
                     # have it cataloged" (e.g. from NVD/CISA KEV ingestion);
@@ -271,11 +278,39 @@ class CheckRegistry:
                             "source": vuln.get("source", result.source),
                         })
                         self._ensure_risk_for_finding(vuln, merged, asset_id, tenant_id)
-                    run_write(queries.LINK_VULNERABILITY_TO_ASSET, {
+                    run_write(queries.LINK_SCANNED_VULNERABILITY, {
                         "asset_id": asset_id, "tenant_id": tenant_id, "cve_id": cve_id,
+                        "source": result.source,
                     })
+                    seen_cves.append(cve_id)
+
+                if asset.get("vulnerability_scan_complete"):
+                    # The scanner says this is everything it currently
+                    # finds on the device -- anything else linked to it
+                    # (patched since, or never confirmed) goes.
+                    self._reconcile_findings(asset_id, tenant_id, result.source, seen_cves)
         except Exception as e:
             logger.error(f"Asset ingestion failed for {result.check_id}: {e}")
+
+    def _reconcile_findings(self, asset_id: str, tenant_id: str, source: str, seen: list[str]) -> None:
+        """Remove findings a complete scan no longer supports on one device
+        (see RECONCILE_SCANNED_VULNERABILITIES). Logged, never fatal."""
+        try:
+            from app.graph.connection import run_write
+            from app.graph import queries
+            rows = run_write(queries.RECONCILE_SCANNED_VULNERABILITIES, {
+                "asset_id": asset_id, "tenant_id": tenant_id,
+                "source": source, "seen": sorted(set(seen)),
+            }) or []
+            if rows and isinstance(rows[0], dict):
+                r = rows[0]
+                if r.get("removed") or r.get("drivers_dropped") or r.get("risks_unlinked"):
+                    logger.info(
+                        f"{source}: {r.get('removed', 0)} finding(s) no longer on asset {asset_id} removed; "
+                        f"{r.get('drivers_dropped', 0)} risk cause(s) dropped, "
+                        f"{r.get('risks_unlinked', 0)} risk link(s) removed")
+        except Exception as e:
+            logger.error(f"Reconciling findings for asset {asset_id} failed: {e}")
 
     def _store_profile(self, raw_profile, asset_id: str, tenant_id: str, result: CheckResult) -> None:
         """

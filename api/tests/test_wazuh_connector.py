@@ -550,3 +550,91 @@ def test_edr_check_counts_hidden_processes_as_reporting_only():
     protection = result.discovered_assets[0]["profile"]["protection"]
     assert protection["status"] == "Installed"
     assert protection["detected"] == ["Malwarebytes — installed (couldn't check whether it's running)"]
+
+
+@responses.activate
+def test_a_complete_vulnerability_fetch_marks_active_devices_as_fully_scanned():
+    """Only when the indexer returned every finding (total == hits) may the
+    registry drop findings a device no longer has -- and never for a
+    disconnected agent, whose last scan may be long out of date."""
+    with _mock_private_dns():
+        _register_wazuh_api()
+        responses.add(
+            responses.POST, f"{INDEXER_URL}/wazuh-states-vulnerabilities-*/_search",
+            json={"hits": {"total": {"value": 1, "relation": "eq"},
+                           "hits": [_vuln_hit("001", "CVE-2026-72775")]}},
+            status=200,
+        )
+        result = WazuhAdapter(tenant_id="t", config=_wazuh_config_with_indexer()).run_check(
+            "wazuh_agent_connectivity")
+
+    by_name = {a["name"]: a for a in result.discovered_assets}
+    assert by_name["Simo"]["vulnerability_scan_complete"] is True
+    # Active with no findings at all: complete too (nothing to keep).
+    assert by_name["build-agent-03"]["vulnerability_scan_complete"] is True
+    assert "vulnerability_scan_complete" not in by_name["old-laptop"]
+    sent_body = json.loads(responses.calls[-1].request.body)
+    assert sent_body["track_total_hits"] is True
+
+
+@responses.activate
+def test_a_truncated_vulnerability_fetch_never_marks_a_device_fully_scanned():
+    with _mock_private_dns():
+        _register_wazuh_api()
+        responses.add(
+            responses.POST, f"{INDEXER_URL}/wazuh-states-vulnerabilities-*/_search",
+            json={"hits": {"total": {"value": MAX_VULNERABILITIES_PER_RUN + 1, "relation": "eq"},
+                           "hits": [_vuln_hit("001", "CVE-2026-72775")]}},
+            status=200,
+        )
+        result = WazuhAdapter(tenant_id="t", config=_wazuh_config_with_indexer()).run_check(
+            "wazuh_agent_connectivity")
+
+    assert not any(a.get("vulnerability_scan_complete") for a in result.discovered_assets)
+
+
+@responses.activate
+def test_a_failed_vulnerability_fetch_never_marks_a_device_fully_scanned():
+    with _mock_private_dns():
+        _register_wazuh_api()
+        responses.add(responses.POST, f"{INDEXER_URL}/wazuh-states-vulnerabilities-*/_search",
+                      json={"error": "boom"}, status=500)
+        result = WazuhAdapter(tenant_id="t", config=_wazuh_config_with_indexer()).run_check(
+            "wazuh_agent_connectivity")
+
+    assert not any(a.get("vulnerability_scan_complete") for a in result.discovered_assets)
+
+
+@responses.activate
+def test_application_guard_settings_are_not_counted_as_defender_failures():
+    """Application Guard is an optional (deprecated) feature: its settings
+    only matter where it's turned on, which Wazuh can't see -- so they're
+    neither a pass nor a fail, and never a recommended fix."""
+    responses.add(responses.POST, f"{BASE_URL}/security/user/authenticate",
+                  json={"data": {"token": "fake-wazuh-jwt"}}, status=200)
+    responses.add(responses.GET, f"{BASE_URL}/agents", json={"data": {"affected_items": [
+        {"id": "001", "status": "active", "name": "Simo", "os": {"platform": "windows"}},
+    ]}}, status=200)
+    sc = f"{BASE_URL}/syscollector/001"
+    responses.add(responses.GET, f"{sc}/processes", json={"data": {
+        "affected_items": [{"name": "MsMpEng.exe"}, {"name": "csrss.exe"}], "total_affected_items": 2}})
+    responses.add(responses.GET, f"{sc}/packages", json={"data": {"affected_items": [], "total_affected_items": 0}})
+    responses.add(responses.GET, f"{BASE_URL}/sca/001", json={"data": {"affected_items": [
+        {"policy_id": "cis_win10_enterprise"}]}})
+    responses.add(responses.GET, f"{BASE_URL}/sca/001/checks/cis_win10_enterprise", json={"data": {"affected_items": [
+        {"title": "Ensure 'Configure Windows Defender SmartScreen' is set to 'Enabled: Warn and prevent bypass'", "result": "failed"},
+        {"title": "Ensure 'Allow auditing events in Microsoft Defender Application Guard' is set to 'Enabled'", "result": "failed"},
+        {"title": "Ensure 'Allow data persistence for Microsoft Defender Application Guard' is set to 'Disabled'", "result": "failed"},
+        {"title": "Ensure 'Turn off Microsoft Defender AntiVirus' is set to 'Disabled'", "result": "passed"},
+    ]}})
+    with _mock_private_dns():
+        result = WazuhAdapter(tenant_id="t", config={
+            "api_url": BASE_URL, "username": "u", "password": "p", "verify_ssl": False,
+        }).run_check("wazuh_agent_connectivity")
+
+    protection = result.discovered_assets[0]["profile"]["protection"]
+    assert protection["policy"] == (
+        "Microsoft Defender settings: 1 of 2 CIS benchmark checks pass "
+        "(2 Application Guard settings not counted: they only apply where Application Guard is turned on)")
+    assert protection["policy_gaps"] == [
+        "Ensure 'Configure Windows Defender SmartScreen' is set to 'Enabled: Warn and prevent bypass'"]

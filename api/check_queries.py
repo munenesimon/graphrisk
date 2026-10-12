@@ -18,6 +18,11 @@ CHECKS = {
     "SET_ATTESTATION": {"tenant_id": "check", "framework_id": "check", "requirement_id": "check",
                         "status": "in_place", "note": None, "evidence_url": None, "attested_by": "check"},
     "DELETE_ATTESTATION": {"tenant_id": "check", "requirement_id": "check"},
+    "LINK_SCANNED_VULNERABILITY": {"tenant_id": "check", "asset_id": "check", "cve_id": "check",
+                                   "source": "check"},
+    "RECONCILE_SCANNED_VULNERABILITIES": {"tenant_id": "check", "asset_id": "check", "source": "check",
+                                          "seen": ["check"]},
+    "GET_ASSET_DETAIL": {"tenant_id": "check", "asset_id": "check"},
     "RECORD_PROGRESS_PEAK": {"tenant_id": "check", "control_title": "check", "source": "check",
                              "open_weight": 0.0},
 }

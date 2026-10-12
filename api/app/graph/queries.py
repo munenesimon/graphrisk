@@ -93,10 +93,12 @@ GET_ASSET_DETAIL = """
          {id: r.id, title: r.title, risk_score: r.risk_score,
           likelihood: r.likelihood, impact: r.impact,
           driver_cves: coalesce(i.driver_cves, []), controls: controls} END) AS risks
-    OPTIONAL MATCH (v:Vulnerability)-[:EXPOSES]->(a)
+    OPTIONAL MATCH (v:Vulnerability)-[e:EXPOSES]->(a)
     WITH a, risks, collect(DISTINCT CASE WHEN v IS NULL THEN NULL ELSE
          {cve_id: v.id, severity: v.severity, cvss_score: v.cvss_score,
-          ransomware_use: v.ransomware_use, description: v.description} END) AS vulns
+          ransomware_use: v.ransomware_use, description: v.description,
+          confirmed_by: coalesce(e.sources, []),
+          last_seen: toString(e.last_seen)} END) AS vulns
     OPTIONAL MATCH (a)-[d:POSSIBLY_SAME_AS]-(other:Asset {tenant_id: $tenant_id})
     WITH a, risks, vulns, collect(DISTINCT CASE WHEN other IS NULL THEN NULL ELSE
          {id: other.id, name: other.name, reason: d.reason} END) AS possible_duplicates
@@ -268,4 +270,58 @@ DELETE_ATTESTATION = """
     MATCH (a:Attestation {tenant_id: $tenant_id, requirement_id: $requirement_id})
     DETACH DELETE a
     RETURN count(*) AS deleted
+"""
+
+
+# ── Device findings: only what a scan actually saw on the device ─────────────
+# A CVE linked to a device by a scanner (Wazuh, Qualys, CrowdStrike...) records
+# which scanners reported it and when it was last seen, on the link itself.
+# `sources` is a list so two scanners reporting the same CVE on one device
+# don't overwrite each other: each run only ever adds or removes its own name.
+LINK_SCANNED_VULNERABILITY = """
+    MATCH (a:Asset {id: $asset_id, tenant_id: $tenant_id})
+    MATCH (v:Vulnerability {cve_id: $cve_id})
+    MERGE (v)-[e:EXPOSES]->(a)
+    SET e.sources    = CASE WHEN $source IN coalesce(e.sources, []) THEN e.sources
+                            ELSE coalesce(e.sources, []) + $source END,
+        e.evidence   = "scan",
+        e.first_seen = coalesce(e.first_seen, datetime()),
+        e.last_seen  = datetime()
+    RETURN a.name AS asset, v.cve_id AS cve_id
+"""
+
+# After a scanner has reported a device's COMPLETE current findings, drop
+# everything on that device the scan no longer supports:
+#   * a CVE this scanner reported before but not now -- patched or removed;
+#     the link goes once no scanner still reports it
+#   * a link with no scanner behind it at all (`sources` unset) -- older
+#     links, and guesses made from the device's vendor/product NAME alone
+#     (e.g. every "Microsoft Windows" CVE ever published), which say nothing
+#     about this device's actual version
+# then trims each connector-made risk link's recorded CVEs to the ones still
+# on the device, and removes the risk link when none are left. Links added by
+# hand (no recorded CVEs) are never touched. Only run on a complete scan: a
+# failed or truncated fetch must not read as "everything was fixed".
+RECONCILE_SCANNED_VULNERABILITIES = """
+    MATCH (a:Asset {id: $asset_id, tenant_id: $tenant_id})
+    OPTIONAL MATCH (v:Vulnerability)-[e:EXPOSES]->(a)
+    WHERE NOT v.cve_id IN $seen AND (e.sources IS NULL OR $source IN e.sources)
+    WITH a, collect(e) AS stale
+    WITH a, stale,
+         [x IN stale WHERE size([s IN coalesce(x.sources, []) WHERE s <> $source]) = 0] AS gone
+    FOREACH (x IN stale | SET x.sources = [s IN coalesce(x.sources, []) WHERE s <> $source])
+    FOREACH (x IN gone | DELETE x)
+    WITH a, size(gone) AS removed
+    OPTIONAL MATCH (:Risk)-[i:IMPACTS]->(a)
+    WHERE i.driver_cves IS NOT NULL AND i.source IS NOT NULL
+    WITH a, removed, i,
+         [c IN coalesce(i.driver_cves, []) WHERE
+            size([(:Vulnerability {cve_id: c})-[:EXPOSES]->(a) | 1]) > 0] AS kept
+    WITH a, removed, i, kept,
+         CASE WHEN i IS NULL THEN 0 ELSE size(i.driver_cves) - size(kept) END AS dropped,
+         CASE WHEN i IS NOT NULL AND size(kept) = 0 THEN 1 ELSE 0 END AS unlinked
+    FOREACH (_ IN CASE WHEN i IS NOT NULL AND size(kept) > 0 THEN [1] ELSE [] END |
+             SET i.driver_cves = kept)
+    FOREACH (_ IN CASE WHEN unlinked = 1 THEN [1] ELSE [] END | DELETE i)
+    RETURN removed, sum(dropped) AS drivers_dropped, sum(unlinked) AS risks_unlinked
 """

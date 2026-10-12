@@ -49,13 +49,35 @@ def test_risks_on_the_device_get_scores_and_verdicts():
 
 def test_actions_are_ranked_ransomware_patch_first():
     titles = [(a["priority"], a["title"]) for a in _actions()]
-    assert titles[:3] == [
+    assert titles[:2] == [
         ("critical", "Update or remove WinRAR 5.70"),
         ("high", "Update or remove Python 3.9.13"),
-        ("high", "Unpatched Vulnerability Risk is not adequately controlled"),
     ]
     assert ("medium", "Fix 1 Microsoft Defender setting") in titles
     assert ("medium", "Fix failed CIS Microsoft Windows 10 Enterprise Benchmark v4.0.0 checks") in titles
+    # Organisation-wide risk items come after everything found on the device.
+    org = [t for a, t in zip(_actions(), titles) if a["scope"] == "organisation"]
+    assert org[0] == ("high", "Unpatched Vulnerability Risk is not adequately controlled")
+    assert titles[-len(org):] == org
+
+
+def test_every_action_says_whether_it_is_about_this_device_or_the_organisation():
+    actions = _actions()
+    assert all(a["scope"] in ("device", "organisation") for a in actions)
+    org = [a for a in actions if a["scope"] == "organisation"]
+    assert org and all(a["category"] == "risk" for a in org)
+    assert all(a["scope"] == "device" for a in actions if a["category"] != "risk")
+    first_org = next(i for i, a in enumerate(actions) if a["scope"] == "organisation")
+    assert all(a["scope"] == "organisation" for a in actions[first_org:])
+
+
+def test_benchmark_for_another_windows_edition_is_called_out():
+    from app.recommendations import _edition_note
+    note = _edition_note("CIS Microsoft Windows 10 Enterprise Benchmark v4.0.0", "Microsoft Windows 10 Pro")
+    assert note and "Enterprise benchmark" in note and "Windows Pro" in note
+    assert _edition_note("CIS Microsoft Windows 10 Enterprise Benchmark v4.0.0",
+                         "Microsoft Windows 10 Enterprise") is None
+    assert _edition_note("CIS Ubuntu Linux 22.04 LTS Benchmark", "Ubuntu 22.04") is None
 
 
 def test_each_action_names_the_control_and_risks_it_helps():

@@ -52,9 +52,12 @@ def test_ingest_assets_creates_a_new_asset_with_the_expected_shape(fake_graph):
     _, lookup_params = fake_graph.query.call_args[0]
     assert lookup_params == {"tenant_id": "tenant-1"}
 
-    # CREATE_ASSET, then the same two onboarding side effects
-    # POST /assets/ triggers (correlate + cascade) -- three run_write calls.
-    assert fake_graph.write.call_count == 3
+    # CREATE_ASSET, then the risk cascade -- but NOT the name-based CVE
+    # correlation POST /assets/ runs: a scanned device only gets the CVEs
+    # its scanner reports.
+    assert fake_graph.write.call_count == 2
+    assert all(c[0][0] != app_queries.CORRELATE_NEW_ASSET_AGAINST_ALL_VULNERABILITIES
+               for c in fake_graph.write.call_args_list)
     _, create_params = fake_graph.write.call_args_list[0][0]
     assert create_params["name"] == "Simo"
     assert create_params["asset_type"] == "Endpoint"
@@ -94,7 +97,7 @@ def test_ingest_assets_dedups_within_a_single_result_too(fake_graph):
         ]),
         "tenant-1",
     )
-    assert fake_graph.write.call_count == 3  # one CREATE_ASSET + its two side effects
+    assert fake_graph.write.call_count == 2  # one CREATE_ASSET + its risk cascade
 
 
 def test_ingest_assets_ignores_an_entry_with_no_name(fake_graph):
@@ -116,16 +119,18 @@ def test_ingest_assets_links_vulnerabilities_on_a_newly_created_asset(fake_graph
         "tenant-1",
     )
 
-    # CREATE_ASSET + 2 onboarding side effects + 2 vulnerability links.
-    assert fake_graph.write.call_count == 5
+    # CREATE_ASSET + risk cascade + 2 vulnerability links.
+    assert fake_graph.write.call_count == 4
     _, create_params = fake_graph.write.call_args_list[0][0]
     asset_id = create_params["id"]
 
     linked_cves = set()
-    for call in fake_graph.write.call_args_list[3:]:
-        _, link_params = call[0]
+    for call in fake_graph.write.call_args_list[2:]:
+        query, link_params = call[0]
+        assert query == app_queries.LINK_SCANNED_VULNERABILITY
         assert link_params["asset_id"] == asset_id
         assert link_params["tenant_id"] == "tenant-1"
+        assert link_params["source"] == "fake_connector"
         linked_cves.add(link_params["cve_id"])
     assert linked_cves == {"CVE-2024-1234", "CVE-2024-5678"}
 
@@ -142,7 +147,41 @@ def test_ingest_assets_links_vulnerabilities_on_an_already_existing_asset(fake_g
 
     assert fake_graph.write.call_count == 1
     _, link_params = fake_graph.write.call_args_list[0][0]
-    assert link_params == {"asset_id": "existing-id", "tenant_id": "tenant-1", "cve_id": "CVE-2024-9999"}
+    assert link_params == {"asset_id": "existing-id", "tenant_id": "tenant-1",
+                           "cve_id": "CVE-2024-9999", "source": "fake_connector"}
+
+
+def test_a_complete_scan_removes_findings_it_no_longer_reports(fake_graph):
+    """Patched software (or a link that was only ever a name-based guess)
+    disappears from the device once a complete scan doesn't report it."""
+    fake_graph.query.return_value = [{"name": "Simo", "id": "existing-id"}]
+    fake_graph.write.return_value = [{"removed": 2, "drivers_dropped": 1, "risks_unlinked": 0}]
+    CheckRegistry()._ingest_assets(
+        _result([{"name": "Simo", "vulnerabilities": ["CVE-2024-9999", "CVE-2024-1111"],
+                  "vulnerability_scan_complete": True}]),
+        "tenant-1",
+    )
+    query, params = fake_graph.write.call_args_list[-1][0]
+    assert query == app_queries.RECONCILE_SCANNED_VULNERABILITIES
+    assert params == {"asset_id": "existing-id", "tenant_id": "tenant-1",
+                      "source": "fake_connector", "seen": ["CVE-2024-1111", "CVE-2024-9999"]}
+
+
+def test_a_complete_scan_with_no_findings_clears_the_device(fake_graph):
+    fake_graph.query.return_value = [{"name": "Simo", "id": "existing-id"}]
+    CheckRegistry()._ingest_assets(
+        _result([{"name": "Simo", "vulnerability_scan_complete": True}]), "tenant-1")
+    query, params = fake_graph.write.call_args_list[-1][0]
+    assert query == app_queries.RECONCILE_SCANNED_VULNERABILITIES and params["seen"] == []
+
+
+def test_an_incomplete_scan_never_removes_anything(fake_graph):
+    """A failed or truncated fetch must not read as "everything was fixed"."""
+    fake_graph.query.return_value = [{"name": "Simo", "id": "existing-id"}]
+    CheckRegistry()._ingest_assets(
+        _result([{"name": "Simo", "vulnerabilities": ["CVE-2024-9999"]}]), "tenant-1")
+    assert all(c[0][0] != app_queries.RECONCILE_SCANNED_VULNERABILITIES
+               for c in fake_graph.write.call_args_list)
 
 
 def _write_side_effect(ransomware_use):

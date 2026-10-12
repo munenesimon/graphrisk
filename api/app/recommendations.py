@@ -19,6 +19,10 @@ Each action says:
     source     which connector the evidence came from
     helps      the control this strengthens and the device's risks that
                control mitigates -- so an action is tied to the risk score
+    scope      "device" -- found on this device, fixed on this device; or
+               "organisation" -- about a risk the whole organisation carries
+               (its score and controls), shown on the device because the
+               device is under that risk
 
 Only evidence-backed advice: if no connector reports on a section, nothing is
 recommended from it (the page's "Not reported yet" card covers that gap).
@@ -100,7 +104,7 @@ def _patch_actions(fix_first: list, risks: list, source: str | None) -> list[dic
             # How to patch is the same for every package; the page says it
             # once above the list instead of on every card.
             "steps": [],
-            "source": source, "helps": _helps("patch", risks),
+            "source": source, "helps": _helps("patch", risks), "scope": "device",
             "cves": [c.get("cve_id") for c in (pkg.get("cves") or [])][:MAX_STEPS],
         })
     return out
@@ -120,7 +124,7 @@ def _protection_actions(profile: Mapping, risks: list) -> list[dict]:
             "detail": "The device's running processes show no recognised antivirus or EDR engine.",
             "steps": ["Install or re-enable endpoint protection (e.g. turn Microsoft Defender Antivirus back on).",
                       "Re-run the connector to confirm it is detected as running."],
-            "source": src, "helps": _helps("protection", risks),
+            "source": src, "helps": _helps("protection", risks), "scope": "device",
         })
     elif status and status.startswith("Installed"):
         out.append({
@@ -129,7 +133,7 @@ def _protection_actions(profile: Mapping, risks: list) -> list[dict]:
             "detail": "It is installed but wasn't seen running, so it isn't protecting the device.",
             "steps": ["Check the product's service is running and not disabled by policy.",
                       "Re-run the connector to confirm it is detected as running."],
-            "source": src, "helps": _helps("protection", risks),
+            "source": src, "helps": _helps("protection", risks), "scope": "device",
         })
     elif status and status.lower().startswith("reduced functionality"):
         out.append({
@@ -139,7 +143,7 @@ def _protection_actions(profile: Mapping, risks: list) -> list[dict]:
                        "with prevention and detection limited."),
             "steps": ["Check the sensor version supports this OS/kernel and is licensed.",
                       "Update the sensor or OS so it leaves reduced functionality mode, then re-run the connector."],
-            "source": src, "helps": _helps("protection", risks),
+            "source": src, "helps": _helps("protection", risks), "scope": "device",
         })
     gaps = [g for g in f.get("policy_gaps") or [] if g]
     if gaps:
@@ -148,7 +152,7 @@ def _protection_actions(profile: Mapping, risks: list) -> list[dict]:
             "title": f"Fix {len(gaps)} Microsoft Defender setting{'s' if len(gaps) != 1 else ''}",
             "detail": f.get("policy") or "Defender settings the CIS benchmark expects aren't enforced.",
             "steps": gaps[:MAX_STEPS],
-            "source": src, "helps": _helps("protection", risks),
+            "source": src, "helps": _helps("protection", risks), "scope": "device",
         })
     return out
 
@@ -167,6 +171,7 @@ def _health_actions(profile: Mapping, risks: list) -> list[dict]:
         "steps": ["Check the device is on and the agent service is running.",
                   "Check it can still reach the manager."],
         "source": _source(profile, "health"), "helps": _helps("health", risks),
+        "scope": "device",
     }]
 
 
@@ -208,7 +213,7 @@ def _stale_actions(profile: Mapping, now: datetime | None) -> list[dict]:
         "detail": ("Everything on this page reflects the last report. Updates installed or new "
                    "findings since then won't show until the connector runs again."),
         "steps": [],
-        "source": ", ".join(names) or None, "helps": None,
+        "source": ", ".join(names) or None, "helps": None, "scope": "device",
     }]
 
 
@@ -221,15 +226,35 @@ def _configuration_actions(profile: Mapping, risks: list) -> list[dict]:
         checks = [c for c in b.get("failed_checks") or [] if isinstance(c, Mapping) and c.get("title")]
         steps = [c["title"] + (f" — {c['remediation']}" if c.get("remediation") else "") for c in checks[:MAX_STEPS]]
         total = (b.get("passed") or 0) + (b.get("failed") or 0)
+        note = _edition_note(b.get("name"), _fields(profile, "os").get("name"))
         out.append({
             "priority": "medium", "category": "configuration",
             "title": f"Fix failed {b.get('name') or 'benchmark'} checks",
             "detail": f"{b.get('failed')} of {total} checks fail" + (f" (score {b.get('score')}%)." if b.get("score") is not None else ".")
+                      + (f" {note}" if note else "")
                       + (" Start with these:" if steps else ""),
             "steps": steps,
             "source": src, "helps": _helps("configuration", risks),
+            "scope": "device",
         })
     return out
+
+
+_EDITIONS = ("Enterprise", "Pro", "Home", "Education", "Server")
+
+
+def _edition_note(benchmark: str | None, os_name: str | None) -> str | None:
+    """Say so when the benchmark was written for a different Windows edition
+    than the device runs (Wazuh ships the Enterprise benchmark for every
+    Windows 10/11 edition), since some of its checks may not apply."""
+    if not benchmark or not os_name:
+        return None
+    bench = next((e for e in _EDITIONS if f" {e}" in benchmark), None)
+    device = next((e for e in _EDITIONS if f" {e}" in os_name), None)
+    if bench and device and bench != device:
+        return (f"This is the {bench} benchmark, the closest one the scanner has for this "
+                f"device's Windows {device}; checks for {bench}-only features may not apply.")
+    return None
 
 
 def _risk_actions(risks: list) -> list[dict]:
@@ -246,6 +271,9 @@ def _risk_actions(risks: list) -> list[dict]:
             "detail": a.get("reason"),
             "steps": [a["fix"]] if a.get("fix") else [],
             "source": None, "helps": None,
+            # A risk and its controls are the organisation's, not this
+            # device's alone -- shown apart from the device's own fixes.
+            "scope": "organisation",
         })
     return out
 
@@ -279,5 +307,7 @@ def recommend_for_asset(profile: Mapping, fix_first: list, risks: list,
         + _configuration_actions(profile, risks)
     )
     order = {id(a): i for i, a in enumerate(actions)}
-    actions.sort(key=lambda a: (PRIORITY_RANK[a["priority"]], _CATEGORY_RANK[a["category"]], order[id(a)]))
+    # This device's own fixes first; organisation-wide risk items after.
+    actions.sort(key=lambda a: (a.get("scope") == "organisation", PRIORITY_RANK[a["priority"]],
+                                _CATEGORY_RANK[a["category"]], order[id(a)]))
     return actions

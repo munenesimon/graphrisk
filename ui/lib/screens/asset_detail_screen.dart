@@ -189,7 +189,20 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
                 style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4),
               ),
             ),
-          for (final a in shown) _ActionRow(action: a),
+          for (var i = 0; i < shown.length; i++) ...[
+            // Device-specific fixes come first; risk-level items about the
+            // whole organisation follow under their own heading, so they're
+            // never read as something wrong with this device alone.
+            if (shown[i]['scope'] == 'organisation' && (i == 0 || shown[i - 1]['scope'] != 'organisation'))
+              const Padding(
+                padding: EdgeInsets.only(top: 6, bottom: 8),
+                child: Text(
+                  'Organisation-wide: risks this device is under, scored across all your assets',
+                  style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+              ),
+            _ActionRow(action: shown[i]),
+          ],
           if (p.recommendations.length > 5)
             TextButton(
               onPressed: () => setState(() => _showAllActions = !_showAllActions),
@@ -672,6 +685,11 @@ class _CveRow extends StatelessWidget {
     final severity = cve['severity']?.toString();
     final cvss = cve['cvss_score'] is num ? (cve['cvss_score'] as num).toDouble() : 0.0;
     final ransomware = cve['ransomware'] == true;
+    // Which scanners reported this CVE on the device. Empty means it was
+    // linked another way (by hand, or an older name-based match) and no
+    // scan has confirmed it.
+    final confirmedBy = cve['confirmed_by'] is List ? (cve['confirmed_by'] as List) : null;
+    final unconfirmed = confirmedBy != null && confirmedBy.isEmpty;
     final parts = <String>[
       if (severity != null) severity,
       if (cvss > 0) 'CVSS ${cvss.toStringAsFixed(1)}',
@@ -695,6 +713,11 @@ class _CveRow extends StatelessWidget {
             const SizedBox(width: 8),
             const Text('Known ransomware use',
                 style: TextStyle(color: kRed, fontSize: 10, fontWeight: FontWeight.w700)),
+          ],
+          if (unconfirmed) ...[
+            const SizedBox(width: 8),
+            const Text('Not confirmed by a scan',
+                style: TextStyle(color: Colors.white38, fontSize: 10, fontStyle: FontStyle.italic)),
           ],
           const Spacer(),
           const Icon(Icons.open_in_new, color: Colors.white24, size: 13),
