@@ -145,15 +145,6 @@ def _protection_actions(profile: Mapping, risks: list) -> list[dict]:
                       "Update the sensor or OS so it leaves reduced functionality mode, then re-run the connector."],
             "source": src, "helps": _helps("protection", risks), "scope": "device",
         })
-    gaps = [g for g in f.get("policy_gaps") or [] if g]
-    if gaps:
-        out.append({
-            "priority": "medium", "category": "protection",
-            "title": f"Fix {len(gaps)} Microsoft Defender setting{'s' if len(gaps) != 1 else ''}",
-            "detail": f.get("policy") or "Defender settings the CIS benchmark expects aren't enforced.",
-            "steps": gaps[:MAX_STEPS],
-            "source": src, "helps": _helps("protection", risks), "scope": "device",
-        })
     return out
 
 

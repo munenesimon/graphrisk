@@ -176,14 +176,19 @@ class OktaAdapter(BaseConnector):
         policies = self._okta_get("/api/v1/policies", params={"type": "PASSWORD"})
         active = [p for p in policies if p.get("status") == "ACTIVE"]
 
-        strong_policy = False
-        for p in active:
-            settings = p.get("settings", {}).get("password", {}).get("complexity", {})
-            min_length = settings.get("minLength", 0)
-            if min_length >= 12:
-                strong_policy = True
-                break
-
+        # Only a minimum length Okta actually reports counts. A policy that
+        # doesn't expose one is unconfirmed, not weak: it can't pass or fail.
+        lengths = [p.get("settings", {}).get("password", {}).get("complexity", {}).get("minLength")
+                   for p in active]
+        known = [n for n in lengths if isinstance(n, int)]
+        if not known:
+            return no_data_result(
+                check_id="okta_password_policy", check_name="Okta Password Policy Strength",
+                category=CheckCategory.IAM, source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title="Password Policy Enforcement",
+                reason="Okta did not report a minimum password length, so it is unconfirmed")
+        strong_policy = max(known) >= 12
+        unconfirmed = len(active) - len(known)
         return CheckResult(
             check_id="okta_password_policy",
             check_name="Okta Password Policy Strength",
@@ -192,10 +197,12 @@ class OktaAdapter(BaseConnector):
             tenant_id=self.tenant_id,
             status=CheckStatus.PASS if strong_policy else CheckStatus.WARNING,
             score=1.0 if strong_policy else 0.5,
-            total_count=len(active),
+            total_count=len(known),
             detail=(
-                "Password policy requires 12+ characters" if strong_policy
-                else "No active password policy enforces 12+ character minimum"
+                ("Password policy requires 12+ characters" if strong_policy
+                 else "No active password policy enforces 12+ character minimum")
+                + (f" ({unconfirmed} polic{'ies' if unconfirmed != 1 else 'y'} didn't report a length: unconfirmed)"
+                   if unconfirmed else "")
             ),
             control_title="Password Policy Enforcement",
         )

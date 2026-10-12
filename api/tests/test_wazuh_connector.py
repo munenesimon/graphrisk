@@ -118,11 +118,11 @@ def test_wazuh_adapter_runs_both_checks_against_a_private_manager():
         by_id = {r.check_id: r for r in results}
 
         connectivity = by_id["wazuh_agent_connectivity"]
-        # 4 non-manager agents, 3 active, 1 disconnected -> 0.75
-        assert connectivity.total_count == 4
-        assert connectivity.affected_count == 1
-        assert connectivity.score == 0.75
-        assert connectivity.status == CheckStatus.FAIL
+        # 4 non-manager agents, 3 active, 1 disconnected. The simulated manager
+        # exposes no process list, so antivirus can't be confirmed on any device:
+        # nothing is scored (the control keeps its current health).
+        assert connectivity.status == CheckStatus.SKIPPED
+        assert "3 device" in connectivity.detail and "unconfirmed" in connectivity.detail
 
         # One discovered_assets entry per non-manager agent, regardless of
         # status -- a disconnected agent is still a real device GraphRisk
@@ -266,7 +266,7 @@ def test_wazuh_adapter_survives_an_unreachable_or_misconfigured_indexer():
         adapter = WazuhAdapter(tenant_id="test-tenant", config=_wazuh_config_with_indexer())
         connectivity = adapter.run_check("wazuh_agent_connectivity")
 
-        assert connectivity.total_count == 4  # the check itself is unaffected
+        assert len(connectivity.discovered_assets) == 4  # the check itself is unaffected
         assert all("vulnerabilities" not in a for a in connectivity.discovered_assets)
 
 
@@ -356,7 +356,6 @@ def test_detect_protection_reports_running_and_installed_products_separately():
     section = detect_protection(
         {"msmpeng.exe", "explorer.exe", "wazuh-agent.exe"},
         ["WinRAR 7.11", "Malwarebytes version 4.6", "Reset Tool", "Preset Manager"],
-        {"passed": 6, "failed": 3, "gaps": ["Ensure 'Turn on behavior monitoring' is set to 'Enabled'"]},
     )
     assert section["status"] == "Active"
     assert section["product"] == "Microsoft Defender Antivirus, Malwarebytes"
@@ -366,8 +365,9 @@ def test_detect_protection_reports_running_and_installed_products_separately():
     ]
     # "Reset"/"Preset" must not read as ESET -- whole-word matching.
     assert "ESET" not in section["product"]
-    assert section["policy"] == "Microsoft Defender settings: 6 of 9 CIS benchmark checks pass"
-    assert section["policy_gaps"] == ["Ensure 'Turn on behavior monitoring' is set to 'Enabled'"]
+    # Wazuh can't read Defender's live feature state: unconfirmed, never inferred.
+    assert section["features"].startswith("Unconfirmed")
+    assert "policy" not in section and "policy_gaps" not in section
     assert section["running"] is True
 
 
@@ -418,8 +418,7 @@ def test_edr_check_counts_a_reporting_agent_with_antivirus_running_as_covered():
     assert "antivirus/EDR running on 1 of 1 checked (Microsoft Defender Antivirus)" in result.detail
     protection = result.discovered_assets[0]["profile"]["protection"]
     assert protection["status"] == "Active"
-    assert protection["policy"] == "Microsoft Defender settings: 1 of 2 CIS benchmark checks pass"
-    assert protection["policy_gaps"] == ["Ensure 'Turn on behavior monitoring' (Microsoft Defender) is set to 'Enabled'"]
+    assert protection["features"].startswith("Unconfirmed")
     # The EDR check's internal markers never reach the stored profile.
     assert "running" not in protection and "running_products" not in protection
 
@@ -538,15 +537,16 @@ def test_hidden_protected_processes_mean_unknown_not_unprotected():
 
 
 @responses.activate
-def test_edr_check_counts_hidden_processes_as_reporting_only():
+def test_edr_check_does_not_score_devices_whose_antivirus_cannot_be_confirmed():
     with _mock_private_dns():
         _register_single_windows_agent(["lsass.exe", "explorer.exe"])
         result = WazuhAdapter(tenant_id="t", config={
             "api_url": BASE_URL, "username": "u", "password": "p", "verify_ssl": False,
         }).run_check("wazuh_agent_connectivity")
 
-    assert result.score == 1.0
-    assert "couldn't confirm antivirus from the running processes" in result.detail
+    # Unconfirmed: nothing measured, so the control keeps its current health.
+    assert result.status == CheckStatus.SKIPPED
+    assert "unconfirmed" in result.detail and "not scored" in result.detail
     protection = result.discovered_assets[0]["profile"]["protection"]
     assert protection["status"] == "Installed"
     assert protection["detected"] == ["Malwarebytes — installed (couldn't check whether it's running)"]
@@ -606,10 +606,10 @@ def test_a_failed_vulnerability_fetch_never_marks_a_device_fully_scanned():
 
 
 @responses.activate
-def test_application_guard_settings_are_not_counted_as_defender_failures():
-    """Application Guard is an optional (deprecated) feature: its settings
-    only matter where it's turned on, which Wazuh can't see -- so they're
-    neither a pass nor a fail, and never a recommended fix."""
+def test_defender_feature_state_is_unconfirmed_not_inferred_from_cis_titles():
+    """Wazuh reports that Defender's process runs, not Defender's settings:
+    CIS checks that merely mention Defender never become a claimed feature
+    state, a score input or a recommended fix."""
     responses.add(responses.POST, f"{BASE_URL}/security/user/authenticate",
                   json={"data": {"token": "fake-wazuh-jwt"}}, status=200)
     responses.add(responses.GET, f"{BASE_URL}/agents", json={"data": {"affected_items": [
@@ -633,8 +633,5 @@ def test_application_guard_settings_are_not_counted_as_defender_failures():
         }).run_check("wazuh_agent_connectivity")
 
     protection = result.discovered_assets[0]["profile"]["protection"]
-    assert protection["policy"] == (
-        "Microsoft Defender settings: 1 of 2 CIS benchmark checks pass "
-        "(2 Application Guard settings not counted: they only apply where Application Guard is turned on)")
-    assert protection["policy_gaps"] == [
-        "Ensure 'Configure Windows Defender SmartScreen' is set to 'Enabled: Warn and prevent bypass'"]
+    assert protection["features"].startswith("Unconfirmed")
+    assert "policy" not in protection and "policy_gaps" not in protection

@@ -59,7 +59,7 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 
 from ..base import BaseConnector, _assert_safe_url
-from ..checks import (PROGRESS_FLOOR_PER_DEVICE, SEVERITY_WEIGHTS, first_run_score,
+from ..checks import (no_data_result, PROGRESS_FLOOR_PER_DEVICE, SEVERITY_WEIGHTS, first_run_score,
                       open_weight as shared_open_weight, progress)
 from ..models import CheckResult, CheckStatus, CheckCategory
 from ..profile import group_vulnerable_packages
@@ -196,7 +196,6 @@ PATCH_FLOOR_PER_DEVICE = PROGRESS_FLOOR_PER_DEVICE
 # a busy Windows laptop runs a few hundred processes.
 MAX_PROCESSES_PER_AGENT = 1000
 MAX_PACKAGES_PER_AGENT = 2000
-MAX_DEFENDER_POLICY_GAPS = 5
 
 # CIS benchmark checks for optional Windows features that only apply where
 # the feature is turned on. Microsoft Defender Application Guard is optional
@@ -512,55 +511,11 @@ class WazuhAdapter(BaseConnector):
         package_names = None if packages is None else [
             str(p.get("name")) for p in packages.get("affected_items") or [] if p.get("name")
         ]
-        defender = self._defender_policy(agent_id) if (platform or "").lower() == "windows" else None
-        protection = detect_protection(process_names, package_names, defender, platform=platform)
+        protection = detect_protection(process_names, package_names, platform=platform)
         if protection:
             prof["protection"] = protection
 
         return prof if succeeded else None
-
-    def _defender_policy(self, agent_id: str) -> dict | None:
-        """Microsoft Defender settings from the agent's CIS benchmark: how
-        many Defender-related checks pass (real-time protection, behaviour
-        monitoring, ...), and the titles of a few that fail. None when SCA
-        has nothing on Defender for this agent, or isn't available."""
-        try:
-            policies = (self._wazuh_get(f"/sca/{agent_id}").get("data") or {}).get("affected_items") or []
-        except Exception as e:
-            logger.debug(f"Wazuh SCA policies for agent {agent_id} unavailable: {e}")
-            return None
-        passed, failed, gaps, conditional = 0, 0, [], 0
-        for policy in policies:
-            policy_id = policy.get("policy_id")
-            if not policy_id:
-                continue
-            try:
-                data = self._wazuh_get(f"/sca/{agent_id}/checks/{policy_id}",
-                                       params={"search": "Defender", "limit": 200})
-            except Exception as e:
-                logger.debug(f"Wazuh Defender checks for agent {agent_id}/{policy_id} unavailable: {e}")
-                continue
-            for c in (data.get("data") or {}).get("affected_items") or []:
-                title = str(c.get("title") or "")
-                if "defender" not in title.lower():
-                    continue
-                result = str(c.get("result") or "").lower()
-                if _feature_dependent(title):
-                    # Settings for an optional feature (Application Guard)
-                    # only matter where it's turned on -- Wazuh can't tell
-                    # whether it is, so don't count them either way.
-                    if result in ("passed", "failed"):
-                        conditional += 1
-                    continue
-                if result == "passed":
-                    passed += 1
-                elif result == "failed":
-                    failed += 1
-                    gaps.append(title)
-        if passed + failed == 0 and not conditional:
-            return None
-        return {"passed": passed, "failed": failed, "gaps": gaps[:MAX_DEFENDER_POLICY_GAPS],
-                "not_counted": conditional}
 
     def _agent_profile(self, agent: dict, vulns: list[dict], severity_counts: dict | None,
                        inventory: dict | None) -> dict:
@@ -729,7 +684,10 @@ class WazuhAdapter(BaseConnector):
         # processes couldn't be read (syscollector off or unavailable) the
         # device falls back to "reporting" only -- the detail line says how
         # many that applies to, so the number is never quietly overstated.
-        covered = 0
+        # Only confirmed facts count: a device whose antivirus state couldn't
+        # be read is "unconfirmed" -- left out of both the numerator and the
+        # denominator rather than assumed covered. A disconnected agent is a
+        # confirmed monitoring gap and does count.
         protected, unprotected, unchecked = 0, 0, 0
         products: set[str] = set()
         for a in agents:
@@ -739,23 +697,22 @@ class WazuhAdapter(BaseConnector):
             verified = prot.get("running")
             if verified is True:
                 protected += 1
-                covered += 1
                 products.update(prot.get("running_products") or [])
             elif verified is False:
                 unprotected += 1
             else:
                 unchecked += 1
-                covered += 1
-        score = round(covered / total, 4) if total > 0 else 0.0
+        confirmed_total = total - unchecked
+        covered = protected
+        score = round(covered / confirmed_total, 4) if confirmed_total > 0 else 0.0
 
         detail = f"{active} of {total} registered agents reporting"
         if protected or unprotected:
             detail += (f"; antivirus/EDR running on {protected} of {protected + unprotected} checked"
                        + (f" ({', '.join(sorted(products))})" if products else ""))
-        if unchecked and (protected or unprotected):
-            detail += f"; {unchecked} couldn't be checked for antivirus (counted as reporting only)"
-        elif unchecked:
-            detail += " (couldn't confirm antivirus from the running processes, so it wasn't checked)"
+        if unchecked:
+            detail += (f"; {unchecked} device{'s' if unchecked != 1 else ''} unconfirmed "
+                       "(couldn't read whether antivirus is running) and not scored")
 
         discovered_assets = []
         for a in agents:
@@ -772,6 +729,15 @@ class WazuhAdapter(BaseConnector):
             asset["profile"] = self._agent_profile(
                 a, agent_vulns or [], severity_counts.get(a.get("id")), inventory.get(a.get("id")))
             discovered_assets.append(asset)
+
+        if protected + unprotected == 0:
+            # Every agent is active but none could be confirmed either way:
+            # nothing to score, so the control keeps its current health.
+            return no_data_result(
+                check_id="wazuh_agent_connectivity", check_name="Wazuh Agent Connectivity",
+                category=CheckCategory.ENDPOINT, source=self.CONNECTOR_ID, tenant_id=self.tenant_id,
+                control_title=self._control_title("wazuh_agent_connectivity"),
+                reason=detail, discovered_assets=discovered_assets)
 
         return CheckResult(
             discovered_assets=discovered_assets,
@@ -929,7 +895,7 @@ class WazuhAdapter(BaseConnector):
 
 
 def detect_protection(process_names: set[str] | None, package_names: list[str] | None,
-                      defender_policy: dict | None = None, platform: str | None = None) -> dict | None:
+                      platform: str | None = None) -> dict | None:
     """
     What endpoint protection is present on one device, as the profile's
     "protection" section. Pure function over data syscollector already
@@ -944,7 +910,7 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
 
     Returns None when there's no evidence either way (nothing could be read).
     """
-    if process_names is None and package_names is None and defender_policy is None:
+    if process_names is None and package_names is None:
         return None
 
     running: dict[str, tuple[str, str]] = {}
@@ -993,16 +959,14 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
         section["product"] = ", ".join(list(running) + installed)
     if detected:
         section["detected"] = detected
-    if defender_policy:
-        checked = defender_policy["passed"] + defender_policy["failed"]
-        skipped = defender_policy.get("not_counted") or 0
-        skipped_text = (f" ({skipped} Application Guard setting{'s' if skipped != 1 else ''} not counted: "
-                        "they only apply where Application Guard is turned on)") if skipped else ""
-        section["policy"] = ((f"Microsoft Defender settings: {defender_policy['passed']} of {checked} "
-                              "CIS benchmark checks pass") if checked else
-                             "Microsoft Defender settings: none of the CIS benchmark checks apply") + skipped_text
-        if defender_policy.get("gaps"):
-            section["policy_gaps"] = list(defender_policy["gaps"])
+    if any(product.startswith("Microsoft Defender") for product in list(running) + installed):
+        # Wazuh reports that the Defender process is running, not Defender's
+        # own settings (real-time protection, tamper protection, cloud
+        # protection...). The CIS benchmark checks that mention Defender are
+        # configuration-policy results, not a live feature state, so no
+        # feature is claimed here and none counts toward any score.
+        section["features"] = ("Unconfirmed: Wazuh can't read Microsoft Defender's live feature "
+                               "state, so none is shown or scored")
     if hidden and not running:
         section["note"] = ("Wazuh can't see Windows protected processes on this device, so a "
                            "running antivirus may not show up here.")

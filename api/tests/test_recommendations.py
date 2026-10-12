@@ -10,8 +10,7 @@ PROFILE = {
     "health": {"fields": {"status": "online"}, "sources": [{"source": "wazuh", "name": "Wazuh"}]},
     "protection": {"fields": {
         "status": "Active", "product": "Microsoft Defender Antivirus",
-        "policy": "Microsoft Defender settings: 6 of 9 CIS benchmark checks pass",
-        "policy_gaps": ["Ensure 'Turn on behavior monitoring' is set to 'Enabled'"],
+        "features": "Unconfirmed: Wazuh can't read Microsoft Defender's live feature state, so none is shown or scored",
     }, "sources": [{"source": "wazuh", "name": "Wazuh"}]},
     "configuration": {"fields": {"benchmarks": [{
         "name": "CIS Microsoft Windows 10 Enterprise Benchmark v4.0.0", "score": 27, "passed": 115, "failed": 302,
@@ -53,7 +52,8 @@ def test_actions_are_ranked_ransomware_patch_first():
         ("critical", "Update or remove WinRAR 5.70"),
         ("high", "Update or remove Python 3.9.13"),
     ]
-    assert ("medium", "Fix 1 Microsoft Defender setting") in titles
+    # Defender feature state is unconfirmed, so no "fix Defender setting" action is invented.
+    assert not any("Defender setting" in title for _, title in titles)
     assert ("medium", "Fix failed CIS Microsoft Windows 10 Enterprise Benchmark v4.0.0 checks") in titles
     # Organisation-wide risk items come after everything found on the device.
     org = [t for a, t in zip(_actions(), titles) if a["scope"] == "organisation"]
