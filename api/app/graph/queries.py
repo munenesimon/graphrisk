@@ -180,3 +180,92 @@ RECORD_CONTROL_PEAK = """
             ELSE c.peak_open_weight END
     RETURN c.peak_open_weight AS peak
 """
+
+
+# ── Framework adherence: obligations, evidence and attestations ─────────────
+# One row per requirement (FrameworkControl) with what GraphRisk knows about
+# it for this tenant, so "not met" and "not evidenced" are never confused:
+#
+#   met             a linked control is at (near) full health
+#   partial         a linked control is working, but not fully
+#   gap             a control is linked but isn't working (health 0)
+#   attested        no control is linked, but the organisation has recorded
+#                   it as in place (self-declared -- labelled as such)
+#   no_evidence     nothing linked and nothing recorded: GraphRisk can't say
+#   not_applicable  recorded as not applicable; left out of the totals
+#
+# A linked control is measured evidence and takes precedence over an
+# attestation (except "not applicable", which removes the requirement).
+# Controls count directly (SATISFIES) or through the crosswalk (MAPS_TO).
+_REQUIREMENT_EVIDENCE = """
+    OPTIONAL MATCH (d:Control {tenant_id: $tenant_id})-[:SATISFIES]->(fc)
+    WITH f, fc, [x IN collect(DISTINCT d) WHERE x IS NOT NULL |
+                 {title: x.title, health: coalesce(x.effectiveness_score, 0.0), via: "direct"}] AS direct
+    OPTIONAL MATCH (fc)-[:MAPS_TO]->(:FrameworkControl)<-[:SATISFIES]-(m:Control {tenant_id: $tenant_id})
+    WITH f, fc, direct, [x IN collect(DISTINCT m) WHERE x IS NOT NULL |
+                 {title: x.title, health: coalesce(x.effectiveness_score, 0.0), via: "crosswalk"}] AS mapped
+    OPTIONAL MATCH (a:Attestation {tenant_id: $tenant_id, requirement_id: fc.id})
+    WITH f, fc, direct + [c IN mapped WHERE NOT c.title IN [x IN direct | x.title]] AS controls, a
+    WITH f, fc, controls, a,
+         reduce(h = 0.0, c IN controls | CASE WHEN c.health > h THEN c.health ELSE h END) AS health
+    WITH f, fc, controls, a, health,
+         CASE WHEN a.status = "not_applicable" THEN "not_applicable"
+              WHEN size(controls) > 0 AND health >= 0.95 THEN "met"
+              WHEN size(controls) > 0 AND health > 0 THEN "partial"
+              WHEN size(controls) > 0 THEN "gap"
+              WHEN a.status = "in_place" THEN "attested"
+              ELSE "no_evidence" END AS status
+    WITH f, fc, controls, a, status, health,
+         CASE status WHEN "attested" THEN 1.0 WHEN "no_evidence" THEN 0.0
+                     WHEN "not_applicable" THEN 0.0 ELSE health END AS score
+"""
+
+FRAMEWORK_ADHERENCE_ALL = """
+    MATCH (fc:FrameworkControl)-[:PART_OF]->(f:Framework)
+""" + _REQUIREMENT_EVIDENCE + """
+    WITH f, count(fc) AS total,
+         sum(CASE status WHEN "not_applicable" THEN 1 ELSE 0 END) AS not_applicable,
+         sum(CASE status WHEN "met" THEN 1 ELSE 0 END) AS met,
+         sum(CASE status WHEN "partial" THEN 1 ELSE 0 END) AS partial,
+         sum(CASE status WHEN "gap" THEN 1 ELSE 0 END) AS gap,
+         sum(CASE status WHEN "attested" THEN 1 ELSE 0 END) AS attested,
+         sum(CASE status WHEN "no_evidence" THEN 1 ELSE 0 END) AS no_evidence,
+         sum(score) AS score_sum
+    OPTIONAL MATCH (o:Organisation {tenant_id: $tenant_id})-[:SUBJECT_TO]->(f)
+    RETURN f.id AS framework_id, f.name AS framework, f.version AS version,
+           coalesce(f.category, "standard") AS category, o IS NOT NULL AS applies,
+           total, not_applicable, met, partial, gap, attested, no_evidence, score_sum
+    ORDER BY applies DESC, f.name
+"""
+
+FRAMEWORK_REQUIREMENTS = """
+    MATCH (fc:FrameworkControl)-[:PART_OF]->(f:Framework {id: $framework_id})
+""" + _REQUIREMENT_EVIDENCE + """
+    OPTIONAL MATCH (o:Organisation {tenant_id: $tenant_id})-[:SUBJECT_TO]->(f)
+    RETURN f.name AS framework, o IS NOT NULL AS applies,
+           fc.id AS id, fc.control_reference AS control_reference, fc.title AS title,
+           fc.domain AS domain, fc.graphrisk_summary AS summary, fc.official_url AS official_url,
+           fc.requirement_type AS requirement_type, controls, status, score,
+           CASE WHEN a IS NULL THEN null ELSE {status: a.status, note: a.note,
+                evidence_url: a.evidence_url, attested_by: a.attested_by,
+                attested_at: toString(a.attested_at)} END AS attestation
+    ORDER BY fc.control_reference
+"""
+
+# Self-declared evidence for a requirement no connector can measure (a
+# policy, a plan, training...). One per (tenant, requirement); re-saving
+# replaces it. Returns nothing when the requirement isn't in that framework.
+SET_ATTESTATION = """
+    MATCH (fc:FrameworkControl {id: $requirement_id})-[:PART_OF]->(:Framework {id: $framework_id})
+    MERGE (a:Attestation {tenant_id: $tenant_id, requirement_id: $requirement_id})
+    SET a.status = $status, a.note = $note, a.evidence_url = $evidence_url,
+        a.attested_by = $attested_by, a.attested_at = datetime()
+    MERGE (a)-[:ATTESTS]->(fc)
+    RETURN a.status AS status
+"""
+
+DELETE_ATTESTATION = """
+    MATCH (a:Attestation {tenant_id: $tenant_id, requirement_id: $requirement_id})
+    DETACH DELETE a
+    RETURN count(*) AS deleted
+"""

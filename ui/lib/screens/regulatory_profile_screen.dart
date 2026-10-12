@@ -99,9 +99,9 @@ class _RegulatoryProfileScreenState extends State<RegulatoryProfileScreen> {
         const SizedBox(height: 4),
         const Text(
           "How much risk your organisation accepts, which decides whether each risk's controls are "
-          "adequate -- and which regulations you are subject to, which decides the notification "
-          "clocks in Blast Radius and Vulnerability Impact. With no regulations set, GraphRisk "
-          "reports none, rather than guessing.",
+          "adequate -- and which regulations and standards apply to you, which decides the "
+          "obligations on the Frameworks page and the notification clocks in Blast Radius and "
+          "Vulnerability Impact. With none set, GraphRisk reports none, rather than guessing.",
           style: TextStyle(color: Colors.white54, fontSize: 13, height: 1.5),
         ),
         const SizedBox(height: 24),

@@ -309,6 +309,35 @@ class ApiService {
     return await _get('/frameworks/$frameworkId/controls');
   }
 
+  // ── Framework adherence ─────────────────────────────────────────────────
+  // Frameworks split into the organisation's obligations (its regulatory
+  // profile) and the rest, each with met / partly met / gap /
+  // self-declared / no-evidence counts.
+  // {has_profile, obligations: [...], other: [...]}
+  static Future<Map<String, dynamic>> getFrameworkAdherence() => _get('/frameworks/adherence');
+
+  // Every requirement of one framework with its evidence (linked controls
+  // and their health, any attestation) and status.
+  static Future<Map<String, dynamic>> getFrameworkRequirements(String frameworkId) =>
+      _get('/frameworks/${Uri.encodeComponent(frameworkId)}/requirements');
+
+  // Self-declare a requirement no connector can measure: "in_place" or
+  // "not_applicable", with an optional note and evidence link.
+  static Future<Map<String, dynamic>> setAttestation(String frameworkId, String requirementId,
+      String status, {String? note, String? evidenceUrl}) {
+    return _put('/frameworks/${Uri.encodeComponent(frameworkId)}/attestation', {
+      'requirement_id': requirementId,
+      'status': status,
+      if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+      if (evidenceUrl != null && evidenceUrl.trim().isNotEmpty) 'evidence_url': evidenceUrl.trim(),
+    });
+  }
+
+  static Future<void> deleteAttestation(String frameworkId, String requirementId) async {
+    await _delete('/frameworks/${Uri.encodeComponent(frameworkId)}/attestation'
+        '?requirement_id=${Uri.encodeQueryComponent(requirementId)}');
+  }
+
   // ── Assets (typed) ─────────────────────────────────────────────────────
   static Future<List<Asset>> getAssetsFull() async {
     final data = await _get('/assets/');

@@ -1,9 +1,16 @@
 import 'package:flutter/material.dart';
-import '../constants/colors.dart';
-import '../services/api_service.dart';
 import 'package:go_router/go_router.dart';
+import '../constants/colors.dart';
+import '../constants/frameworks.dart';
+import '../services/api_service.dart';
+import '../widgets/adherence.dart';
 import '../widgets/motion.dart';
 
+/// Frameworks split into the organisation's obligations (its regulatory
+/// profile, set on the Risk Appetite & Regulations page) and everything
+/// else, which is shown only for reference. Each framework's requirements
+/// are broken down into met / partly met / gaps / self-declared / no
+/// evidence yet, so "GraphRisk can't see this" never reads as "failed".
 class FrameworksScreen extends StatefulWidget {
   const FrameworksScreen({super.key});
   @override
@@ -11,134 +18,206 @@ class FrameworksScreen extends StatefulWidget {
 }
 
 class _FrameworksScreenState extends State<FrameworksScreen> {
-  List<dynamic>? _frameworks;
-  Map<String, dynamic>? _coverage;
+  Map<String, dynamic>? _data;
   bool _loading = true;
+  String? _error;
+  bool _showOther = false;
 
   @override
   void initState() { super.initState(); _load(); }
 
   Future<void> _load() async {
     try {
-      final f = await ApiService.getFrameworks();
-      final c = await ApiService.getFrameworkCoverage();
+      final data = await ApiService.getFrameworkAdherence();
       if (!mounted) return;
-      setState(() { _frameworks = f; _coverage = c; _loading = false; });
+      setState(() { _data = data; _loading = false; _error = null; });
     } catch (e) {
       if (!mounted) return;
       // Session-expiry redirect is already in flight -- see dashboard_screen.dart.
       if (e is AuthException) return;
-      setState(() { _loading = false; });
+      setState(() { _loading = false; _error = e.toString().replaceFirst('Exception: ', ''); });
     }
   }
 
   @override
   Widget build(BuildContext context) {
     if (_loading) return const PageSkeleton();
-    final frameworks   = _frameworks ?? [];
-    final coverageList = (_coverage?['frameworks'] as List? ?? []);
-    // The coverage-overview rows only carry a framework name (the
-    // dashboard's aggregate endpoint was never given an id to return),
-    // so look the id up from the full frameworks list to make these
-    // rows tappable too, same as the "All Frameworks" list below.
-    final idByName = {
-      for (final f in frameworks) (f['name']?.toString() ?? ''): (f['id']?.toString() ?? ''),
-    };
+    if (_error != null) {
+      return Center(child: Text('Error: $_error', style: const TextStyle(color: kRed)));
+    }
+    final obligations = (_data?['obligations'] as List? ?? []).cast<Map<String, dynamic>>();
+    final other = (_data?['other'] as List? ?? []).cast<Map<String, dynamic>>();
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Compliance Frameworks',
-            style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 4),
-        const Text('Framework control coverage for your tenant',
-            style: TextStyle(color: Colors.white54, fontSize: 13)),
-        const SizedBox(height: 28),
+    return RefreshIndicator(
+      onRefresh: _load,
+      color: kAccent,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(24),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Compliance Frameworks',
+              style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          const Text('How well your obligations are met, from what your connectors measure and what you record',
+              style: TextStyle(color: Colors.white54, fontSize: 13)),
+          const SizedBox(height: 20),
+          const _Legend(),
+          const SizedBox(height: 24),
 
-        if (coverageList.isNotEmpty) ...[
-          const Text('Coverage Overview',
-              style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 16),
-          ...coverageList.map((c) {
-            final coverage = (c['coverage_pct'] ?? 0.0).toDouble();
-            // Adherence: how well each requirement is actually met, from the
-            // health of the controls covering it -- rises as findings are
-            // fixed. Falls back to plain coverage from an older API.
-            final pct     = (c['adherence_pct'] ?? coverage).toDouble();
-            final color   = pct >= 80 ? kGreen : pct >= 40 ? kOrange : kRed;
-            final covered = c['covered_controls']?.toString() ?? '0';
-            final total   = c['total_controls']?.toString()   ?? '0';
-            final name    = c['framework']?.toString() ?? '';
-            final id      = idByName[name] ?? '';
-            final card = Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(color: kSurface, borderRadius: BorderRadius.circular(12)),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(children: [
-                  Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  const Spacer(),
-                  Text('${pct.toStringAsFixed(1)}% met',
-                      style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 16)),
-                ]),
-                const SizedBox(height: 4),
-                Text('$covered / $total requirements have a control in place '
-                    '(${coverage.toStringAsFixed(0)}%) · met by how well those controls are working',
-                    style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                const SizedBox(height: 10),
-                AnimatedBar(value: pct / 100, color: color, height: 8),
-              ]),
-            );
-            if (id.isEmpty) return card;
-            return Material(
-              color: Colors.transparent,
-              child: InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () => context.go('/frameworks/${Uri.encodeComponent(id)}?name=${Uri.encodeQueryComponent(name)}'),
-                child: card,
-              ),
-            );
-          }),
+          _SectionTitle('Your obligations',
+              obligations.isEmpty ? null : 'From your regulatory profile'),
+          const SizedBox(height: 12),
+          if (obligations.isEmpty)
+            _NoProfileCard(onSet: () => context.go('/regulatory'))
+          else
+            ...obligations.map((f) => _FrameworkCard(framework: f, emphasised: true)),
+
           const SizedBox(height: 28),
-        ],
-
-        const Text('All Frameworks',
-            style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 16),
-        ...frameworks.map((f) {
-          final id       = f['id']?.toString()              ?? '';
-          final name     = f['name']?.toString()           ?? '';
-          final version  = f['version']?.toString()        ?? '';
-          final controls = f['total_controls']?.toString() ?? '0';
-          return Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(10),
-              onTap: id.isEmpty ? null : () => context.go('/frameworks/${Uri.encodeComponent(id)}?name=${Uri.encodeQueryComponent(name)}'),
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: kSurface, borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: kAccent.withOpacity(0.2))),
-                child: Row(children: [
-                  Container(width: 40, height: 40,
-                    decoration: BoxDecoration(
-                      color: kAccent.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-                    child: const Icon(Icons.policy_outlined, color: kAccent, size: 20)),
-                  const SizedBox(width: 14),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    Text('v$version - $controls controls',
-                        style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                  ])),
-                  const Icon(Icons.chevron_right, color: Colors.white38),
-                ]),
-              ),
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => setState(() => _showOther = !_showOther),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(children: [
+                Icon(_showOther ? Icons.expand_less : Icons.expand_more, color: Colors.white54, size: 20),
+                const SizedBox(width: 6),
+                Text('Other frameworks (${other.length})',
+                    style: const TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text('Not in your profile -- for reference only',
+                      style: TextStyle(color: Colors.white38, fontSize: 12), overflow: TextOverflow.ellipsis),
+                ),
+              ]),
             ),
-          );
-        }),
+          ),
+          if (_showOther) ...[
+            const SizedBox(height: 12),
+            ...other.map((f) => _FrameworkCard(framework: f, emphasised: false)),
+          ],
+        ]),
+      ),
+    );
+  }
+}
+
+class _SectionTitle extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  const _SectionTitle(this.title, this.subtitle);
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+      Text(title, style: const TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
+      if (subtitle != null) ...[
+        const SizedBox(width: 8),
+        Text(subtitle!, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+      ],
+    ]);
+  }
+}
+
+class _Legend extends StatelessWidget {
+  const _Legend();
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(spacing: 14, runSpacing: 6, children: [
+      for (final s in RequirementStatus.all)
+        if (s != RequirementStatus.notApplicable)
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            Container(width: 10, height: 10, decoration: BoxDecoration(
+                color: s == RequirementStatus.noEvidence ? kSurface2 : s.color,
+                borderRadius: BorderRadius.circular(3))),
+            const SizedBox(width: 6),
+            Text(s.label, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+          ]),
+    ]);
+  }
+}
+
+class _NoProfileCard extends StatelessWidget {
+  final VoidCallback onSet;
+  const _NoProfileCard({required this.onSet});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: kSurface, borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: kAccent.withOpacity(0.3)),
+      ),
+      child: Row(children: [
+        const Icon(Icons.gavel_outlined, color: kAccent),
+        const SizedBox(width: 12),
+        const Expanded(
+          child: Text(
+            "You haven't said which regulations or standards apply to you yet, so nothing is "
+            'treated as an obligation. Choose them on the Risk Appetite & Regulations page.',
+            style: TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+        ),
+        const SizedBox(width: 12),
+        TextButton(onPressed: onSet, child: const Text('Choose')),
       ]),
+    );
+  }
+}
+
+class _FrameworkCard extends StatelessWidget {
+  final Map<String, dynamic> framework;
+  final bool emphasised;
+  const _FrameworkCard({required this.framework, required this.emphasised});
+
+  @override
+  Widget build(BuildContext context) {
+    final id = framework['framework_id']?.toString() ?? '';
+    final slug = framework['framework']?.toString() ?? id;
+    final name = frameworkDisplayName(slug);
+    final pct = (framework['adherence_pct'] as num?)?.toDouble();
+    final evidenced = (framework['evidenced'] as num?)?.toInt() ?? 0;
+    final applicable = (framework['applicable'] as num?)?.toInt() ?? 0;
+    final color = emphasised ? adherenceColor(pct) : Colors.white54;
+
+    final card = Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: emphasised ? kSurface : kSurface.withOpacity(0.6),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(
+            child: Text(name,
+                style: TextStyle(color: emphasised ? Colors.white : Colors.white70, fontWeight: FontWeight.bold),
+                overflow: TextOverflow.ellipsis),
+          ),
+          const SizedBox(width: 8),
+          Text(pct == null ? '—' : '${pct.toStringAsFixed(1)}% met',
+              style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 16)),
+        ]),
+        const SizedBox(height: 4),
+        Text(
+          applicable == 0
+              ? 'Every requirement is marked not applicable'
+              : 'Evidence for $evidenced of $applicable requirements · ${adherenceBreakdown(framework)}',
+          style: const TextStyle(color: Colors.white54, fontSize: 12),
+        ),
+        const SizedBox(height: 10),
+        AdherenceBar(framework: framework),
+      ]),
+    );
+    if (id.isEmpty) return card;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => context.go('/frameworks/${Uri.encodeComponent(id)}?name=${Uri.encodeQueryComponent(name)}'),
+        child: card,
+      ),
     );
   }
 }
