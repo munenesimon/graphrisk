@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../constants/colors.dart';
+import '../constants/frameworks.dart';
 import '../services/api_service.dart';
 import '../widgets/adherence.dart';
 import '../widgets/motion.dart';
@@ -103,6 +104,7 @@ class _FrameworkDetailScreenState extends State<FrameworkDetailScreen> {
     final evidenced = (data['evidenced'] as num?)?.toInt() ?? 0;
     final applicable = (data['applicable'] as num?)?.toInt() ?? 0;
     final applies = data['applies'] == true;
+    final notice = kFrameworkNotices[data['framework']?.toString() ?? ''];
     final shown = _filter == null ? reqs : reqs.where((r) => r['status'] == _filter!.key).toList();
 
     return RefreshIndicator(
@@ -141,6 +143,21 @@ class _FrameworkDetailScreenState extends State<FrameworkDetailScreen> {
               ),
             ]),
           ),
+          if (notice != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: kAccent.withOpacity(0.08), borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: kAccent.withOpacity(0.25)),
+              ),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Icon(Icons.info_outline, color: kAccent, size: 18),
+                const SizedBox(width: 10),
+                Expanded(child: Text(notice, style: const TextStyle(color: Colors.white70, fontSize: 12))),
+              ]),
+            ),
+          ],
           const SizedBox(height: 20),
 
           Wrap(spacing: 8, runSpacing: 8, children: [

@@ -19,6 +19,8 @@ const Map<String, String> kFrameworkDisplayNames = {
   'CBK_CYBER_BANKS': 'CBK Cybersecurity Guidance (Banks, 2017)',
   'CBK_CYBER_PSP': 'CBK Cybersecurity Guideline (PSPs, 2019)',
   'KENYA_CMCA_CII': 'CMCA Critical Information Infrastructure Regs 2024',
+  'ISO_27001': 'ISO/IEC 27001:2022 (readiness)',
+  'SOC2_TSC': 'SOC 2 readiness (Trust Services Criteria)',
 };
 
 const Map<String, String> kFrameworkDescriptions = {
@@ -39,6 +41,10 @@ const Map<String, String> kFrameworkDescriptions = {
       "providers (2019). Gaps here affect a PSP's licence conditions.",
   'KENYA_CMCA_CII': "Kenya's Critical Information Infrastructure regulations under the "
       'Computer Misuse and Cybercrimes Act (2024). Applies to designated CII operators.',
+  'ISO_27001': 'ISO/IEC 27001:2022 — the international information security management '
+      'standard. Voluntary; GraphRisk shows readiness, not certification.',
+  'SOC2_TSC': 'AICPA Trust Services Criteria behind SOC 2 reports — often requested by US '
+      'customers. Voluntary; GraphRisk shows readiness only.',
 };
 
 String frameworkDisplayName(String slug) => kFrameworkDisplayNames[slug] ?? slug;
@@ -54,6 +60,8 @@ const Map<String, String> kFrameworkShortNames = {
   'CBK_CYBER_BANKS': 'CBK Banks',
   'CBK_CYBER_PSP': 'CBK PSPs',
   'KENYA_CMCA_CII': 'CMCA CII',
+  'ISO_27001': 'ISO 27001',
+  'SOC2_TSC': 'SOC 2',
 };
 
 String frameworkShortName(String slug) =>
@@ -86,4 +94,23 @@ const Set<String> kStandardFrameworkNames = {
   'NIST_CSF',
   'CIS_Controls',
   'PCI_DSS',
+  'ISO_27001',
+  'SOC2_TSC',
+};
+
+/// Notes shown at the top of a framework's requirements page. ISO/IEC 27001
+/// is copyrighted: GraphRisk holds only reference numbers and its own
+/// summaries, and must never imply certification.
+const Map<String, String> kFrameworkNotices = {
+  'ISO_27001': 'Readiness view, not certification -- only an accredited certification body can '
+      'certify you. GraphRisk shows ISO/IEC 27001:2022 reference numbers with its own short '
+      'summaries; use your licensed copy of the standard (from ISO or the Kenya Bureau of '
+      'Standards) for the actual requirements. Where it overlaps Kenyan law, the law prevails. '
+      'Requirements you mark "Not applicable", with the reason, form your Statement of Applicability.',
+  'SOC2_TSC': 'Readiness view only -- SOC 2 is a report that only a CPA firm can issue; GraphRisk '
+      'never makes you "SOC 2 certified" or "compliant". GraphRisk shows the AICPA Trust Services '
+      'Criteria identifiers with its own short summaries; use the AICPA\'s published criteria for '
+      'the actual text. Security (CC) applies to every report; mark the availability, '
+      'confidentiality, processing-integrity or privacy criteria outside your report\'s scope '
+      '"Not applicable". For privacy, the Kenya Data Protection Act is the binding law.',
 };
