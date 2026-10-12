@@ -635,3 +635,64 @@ def test_defender_feature_state_is_unconfirmed_not_inferred_from_cis_titles():
     protection = result.discovered_assets[0]["profile"]["protection"]
     assert protection["features"].startswith("Unconfirmed")
     assert "policy" not in protection and "policy_gaps" not in protection
+
+
+def _register_sca_for(os_name: str):
+    responses.add(responses.POST, f"{BASE_URL}/security/user/authenticate",
+                  json={"data": {"token": "fake-wazuh-jwt"}}, status=200)
+    responses.add(responses.GET, f"{BASE_URL}/agents", json={"data": {"affected_items": [
+        {"id": "001", "status": "active", "name": "Simo",
+         "os": {"platform": "windows", "name": os_name}},
+    ]}}, status=200)
+    responses.add(responses.GET, f"{BASE_URL}/sca/001", json={"data": {"affected_items": [
+        {"policy_id": "cis_win10", "name": "CIS Microsoft Windows 10 Enterprise Benchmark v4.0.0",
+         "pass": 5, "fail": 5, "total_checks": 10, "score": 50}]}})
+    checks = [
+        {"id": 1, "title": "Ensure 'Minimum password length' is set to '14 or more character(s)'", "result": "failed"},
+        {"id": 2, "title": "Ensure 'Turn On Virtualization Based Security: Credential Guard Configuration' is set", "result": "failed"},
+        {"id": 3, "title": "Ensure 'Configure AppLocker' rules are enforced", "result": "failed"},
+        {"id": 4, "title": "Ensure 'Do not show Windows tips' is set to 'Enabled'", "result": "passed"},
+        {"id": 5, "title": "Ensure 'Account lockout duration' is set to '15 or more minute(s)'", "result": "failed"},
+    ]
+    def cb(request):
+        import json as _j
+        from urllib.parse import parse_qs, urlparse
+        q = parse_qs(urlparse(request.url).query)
+        items = checks
+        if q.get("result"):
+            items = [c for c in items if c["result"] == q["result"][0]]
+        if q.get("search"):
+            term = q["search"][0].lower()
+            items = [c for c in items if term in c["title"].lower()]
+        return (200, {}, _j.dumps({"data": {"affected_items": items}}))
+    responses.add_callback(responses.GET, f"{BASE_URL}/sca/001/checks/cis_win10", callback=cb)
+
+
+@responses.activate
+def test_enterprise_only_checks_are_not_counted_on_a_pro_laptop():
+    _register_sca_for("Microsoft Windows 10 Pro")
+    with _mock_private_dns():
+        result = WazuhAdapter(tenant_id="t", config={
+            "api_url": BASE_URL, "username": "u", "password": "p", "verify_ssl": False,
+        }).run_check("wazuh_sca_compliance")
+    bench = result.discovered_assets[0]["profile"]["configuration"]["benchmarks"][0]
+    # Credential Guard (failed), AppLocker (failed) and Windows tips (passed) don't apply to Pro.
+    assert (bench["passed"], bench["failed"], bench["not_counted"]) == (4, 3, 3)
+    assert bench["score"] == round(4 / 7 * 100)
+    assert [c["title"] for c in bench["failed_checks"]] == [
+        "Ensure 'Minimum password length' is set to '14 or more character(s)'",
+        "Ensure 'Account lockout duration' is set to '15 or more minute(s)'"]
+    assert "Pro" not in bench["not_counted_note"] and "Enterprise-only" in bench["not_counted_note"]
+    assert "not counted" in result.detail
+
+
+@responses.activate
+def test_enterprise_checks_still_count_on_an_enterprise_device():
+    _register_sca_for("Microsoft Windows 10 Enterprise")
+    with _mock_private_dns():
+        result = WazuhAdapter(tenant_id="t", config={
+            "api_url": BASE_URL, "username": "u", "password": "p", "verify_ssl": False,
+        }).run_check("wazuh_sca_compliance")
+    bench = result.discovered_assets[0]["profile"]["configuration"]["benchmarks"][0]
+    assert (bench["passed"], bench["failed"]) == (5, 5)
+    assert "not_counted" not in bench

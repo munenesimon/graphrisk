@@ -208,6 +208,32 @@ def _feature_dependent(title: str) -> bool:
     t = (title or "").lower()
     return any(k in t for k in FEATURE_DEPENDENT_CHECKS)
 
+
+# The CIS benchmark Wazuh uses is written for Windows 10 Enterprise. These
+# settings cover features that Pro (and Home) don't have or can't enforce
+# (Microsoft: Credential Guard, Device Guard and AppLocker are Enterprise /
+# Education only; "Do not show Windows tips" and "Turn off Microsoft consumer
+# experiences" only take effect there). On those editions such a check isn't
+# a misconfiguration, so it's neither a pass nor a fail.
+ENTERPRISE_ONLY_CHECKS = ("credential guard", "device guard", "applocker",
+                          "windows tips", "microsoft consumer experiences")
+
+
+def _enterprise_edition(os_name: str | None) -> bool:
+    """True when the OS name says Enterprise or Education. Unknown or empty
+    names are NOT assumed to be Enterprise: the checks stay uncounted."""
+    n = (os_name or "").lower()
+    return "enterprise" in n or "education" in n
+
+
+def _not_applicable_to_device(title: str, os_name: str | None) -> bool:
+    """Checks that shouldn't count for this device: optional features, and
+    Enterprise-only settings on a Pro/Home laptop."""
+    if _feature_dependent(title):
+        return True
+    t = (title or "").lower()
+    return (not _enterprise_edition(os_name)) and any(k in t for k in ENTERPRISE_ONLY_CHECKS)
+
 # Markers detect_protection adds for the EDR check; never stored.
 _INTERNAL_PROFILE_KEYS = frozenset({"running", "running_products"})
 
@@ -566,7 +592,7 @@ class WazuhAdapter(BaseConnector):
             }
         return profile
 
-    def _failed_sca_checks(self, agent_id: str, policy_id: str | None) -> list[dict]:
+    def _failed_sca_checks(self, agent_id: str, policy_id: str | None, os_name: str | None = None) -> list[dict]:
         """The first few failed checks of one SCA policy, with Wazuh's own
         remediation text. [] if the policy id is missing or the request fails
         -- the benchmark score is still useful without them."""
@@ -575,7 +601,7 @@ class WazuhAdapter(BaseConnector):
         try:
             data = self._wazuh_get(
                 f"/sca/{agent_id}/checks/{policy_id}",
-                params={"result": "failed", "limit": MAX_FAILED_CHECKS_PER_POLICY},
+                params={"result": "failed", "limit": MAX_FAILED_CHECKS_PER_POLICY * 5},
             )
         except Exception as e:
             logger.debug(f"Wazuh failed SCA checks for agent {agent_id}/{policy_id} unavailable: {e}")
@@ -583,8 +609,31 @@ class WazuhAdapter(BaseConnector):
         return [
             {"title": c.get("title"), "remediation": c.get("remediation")}
             for c in (data.get("data") or {}).get("affected_items") or []
-            if c.get("title") and not _feature_dependent(c.get("title"))
-        ]
+            if c.get("title") and not _not_applicable_to_device(c.get("title"), os_name)
+        ][:MAX_FAILED_CHECKS_PER_POLICY]
+
+    def _uncounted_checks(self, agent_id: str, policy_id: str | None, os_name: str | None) -> dict:
+        """How many passed / failed checks of this policy don't apply to the
+        device (optional features, Enterprise-only settings on Pro), so the
+        score can leave them out. {} when none or when the lookup fails --
+        then the manager's own numbers stand."""
+        if not policy_id:
+            return {}
+        seen: dict[str, str] = {}
+        for term in FEATURE_DEPENDENT_CHECKS + ENTERPRISE_ONLY_CHECKS:
+            try:
+                data = self._wazuh_get(f"/sca/{agent_id}/checks/{policy_id}",
+                                       params={"search": term, "limit": 200})
+            except Exception as e:
+                logger.debug(f"Wazuh SCA search {term!r} for agent {agent_id} unavailable: {e}")
+                return {}
+            for c in (data.get("data") or {}).get("affected_items") or []:
+                title = str(c.get("title") or "")
+                if _not_applicable_to_device(title, os_name):
+                    seen[str(c.get("id") or title)] = str(c.get("result") or "").lower()
+        passed = sum(1 for r in seen.values() if r == "passed")
+        failed = sum(1 for r in seen.values() if r == "failed")
+        return {"passed": passed, "failed": failed} if passed + failed else {}
 
     def _control_title(self, check_id: str) -> str:
         return self.config.get("control_titles", {}).get(check_id, DEFAULT_CONTROL_TITLES[check_id])
@@ -825,6 +874,7 @@ class WazuhAdapter(BaseConnector):
         total_pass = 0
         total_fail = 0
         total_not_applicable = 0
+        total_not_counted = 0
         agents_with_data = 0
         profiles = []
         for agent in agents:
@@ -833,27 +883,49 @@ class WazuhAdapter(BaseConnector):
             if policies:
                 agents_with_data += 1
             benchmarks = []
+            os_name = (agent.get("os") or {}).get("name")
             for policy in policies:
                 passed = policy.get("pass") or 0
                 total = policy.get("total_checks") or 0
                 failed_n = policy.get("fail")
                 if failed_n is None:
                     failed_n = max(total - passed, 0)
+                # Settings that don't apply to this device (optional features,
+                # Enterprise-only on Pro) are neither a pass nor a fail.
+                skipped = self._uncounted_checks(agent["id"], policy.get("policy_id"), os_name)
+                skipped_pass = min(skipped.get("passed", 0), passed)
+                skipped_fail = min(skipped.get("failed", 0), failed_n)
+                passed -= skipped_pass
+                failed_n -= skipped_fail
+                total -= skipped_pass + skipped_fail
+                total_not_counted += skipped_pass + skipped_fail
                 # Wazuh also reports checks that don't apply to the device.
                 # Like Wazuh's own score, count only applicable checks, so the
                 # run message and the device page show the same numbers.
                 total_pass += passed
                 total_fail += failed_n
                 total_not_applicable += max(total - passed - failed_n, 0)
-                benchmarks.append({
+                score = (round(passed / (passed + failed_n) * 100)
+                         if (passed + failed_n) else policy.get("score"))
+                bench = {
                     "name": policy.get("name") or policy.get("policy_id"),
-                    "score": policy.get("score"),
-                    "passed": policy.get("pass"),
-                    "failed": policy.get("fail"),
-                    "total": policy.get("total_checks"),
+                    "score": score,
+                    "passed": passed,
+                    "failed": failed_n,
+                    "total": total,
                     "scanned_at": policy.get("end_scan"),
-                    "failed_checks": self._failed_sca_checks(agent["id"], policy.get("policy_id")),
-                })
+                    "failed_checks": self._failed_sca_checks(agent["id"], policy.get("policy_id"), os_name),
+                }
+                if skipped_pass + skipped_fail:
+                    bench["not_counted"] = skipped_pass + skipped_fail
+                    bench["not_counted_note"] = (
+                        f"{skipped_pass + skipped_fail} setting(s) for optional or Enterprise-only features "
+                        "(e.g. Credential Guard, AppLocker, Application Guard) aren't counted: "
+                        "they don't apply to this edition of Windows"
+                        if not _enterprise_edition(os_name) else
+                        f"{skipped_pass + skipped_fail} Application Guard setting(s) aren't counted: "
+                        "they only apply where that optional feature is turned on")
+                benchmarks.append(bench)
             if benchmarks:
                 # Detail for the device page only -- this check doesn't
                 # discover devices, so it never creates an asset.
@@ -886,6 +958,8 @@ class WazuhAdapter(BaseConnector):
                 f"{failed} of {total_checks} applicable SCA checks failing across "
                 f"{agents_with_data} of {len(agents)} active agents with SCA data"
                 + (f" ({total_not_applicable} not applicable)" if total_not_applicable else "")
+                + (f" ({total_not_counted} Enterprise-only or optional-feature settings not counted)"
+                   if total_not_counted else "")
                 if total_checks > 0 else
                 f"No SCA policy data returned for {len(agents)} active agents "
                 "-- confirm the SCA module is enabled on these agents"

@@ -222,6 +222,7 @@ def _configuration_actions(profile: Mapping, risks: list) -> list[dict]:
             "priority": "medium", "category": "configuration",
             "title": f"Fix failed {b.get('name') or 'benchmark'} checks",
             "detail": f"{b.get('failed')} of {total} checks fail" + (f" (score {b.get('score')}%)." if b.get("score") is not None else ".")
+                      + (f" {b['not_counted_note']}." if b.get("not_counted_note") else "")
                       + (f" {note}" if note else "")
                       + (" Start with these:" if steps else ""),
             "steps": steps,

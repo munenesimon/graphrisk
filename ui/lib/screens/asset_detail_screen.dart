@@ -754,6 +754,11 @@ class _BenchmarkTile extends StatelessWidget {
         ]),
         const SizedBox(height: 2),
         Text(summary.join(' · '), style: const TextStyle(color: Colors.white38, fontSize: 11)),
+        if (benchmark['not_counted_note'] != null) ...[
+          const SizedBox(height: 2),
+          Text(benchmark['not_counted_note'].toString(),
+              style: const TextStyle(color: Colors.white38, fontSize: 11, fontStyle: FontStyle.italic)),
+        ],
         if (score != null) ...[
           const SizedBox(height: 6),
           ClipRRect(
