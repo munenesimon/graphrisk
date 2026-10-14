@@ -338,3 +338,30 @@ DASHBOARD_CONTROLS_DETAIL = """
            c.last_check_detail AS detail, toString(c.last_tested_at) AS last_tested_at
     ORDER BY c.title
 """
+
+
+# Overrides graphrisk-core's WRITE_CHECK_RESULT: the control status now
+# comes from implementation_status_for() in connectors/registry.py (graded
+# by health, so a failing check on a control that partly works reads
+# "PartiallyImplemented", not "NotImplemented"). A null status leaves the
+# control's status as it was. Move into graphrisk-core when convenient.
+import graphrisk_core.queries as _core_queries  # noqa: E402
+_RECOMPUTE_RISK = getattr(_core_queries, "_RECOMPUTE_RISK", "")
+
+WRITE_CHECK_RESULT = """
+    MATCH (c:Control {title: $control_title, tenant_id: $tenant_id})
+    SET c.implementation_status = coalesce($implementation_status, c.implementation_status),
+        c.effectiveness_score = $score,
+        c.last_tested_at      = datetime(),
+        c.last_check_source   = $source,
+        c.last_check_detail   = $detail
+    WITH c
+    CALL {
+        WITH c
+        MATCH (c)-[:MITIGATES]->(r:Risk)
+        WITH DISTINCT r
+""" + _RECOMPUTE_RISK + """
+        RETURN count(r) AS risks_updated
+    }
+    RETURN c.title AS control, risks_updated
+"""

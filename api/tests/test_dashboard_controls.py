@@ -58,3 +58,39 @@ def test_summary_endpoint_returns_control_health(client, fake_graph, as_user):
     assert c["total"] == 2 and c["working"] == 1 and c["partial"] == 1
     assert c["avg_health_pct"] == 64.0
     assert [i["title"] for i in c["items"]] == ["Endpoint Protection", "Secure Configuration Baseline"]
+
+
+# ── Control status follows health ──────────────────────────────────────────
+from app.connectors.models import CheckStatus
+from app.connectors.registry import implementation_status_for
+
+
+def test_status_is_graded_by_health_not_just_pass_or_fail():
+    assert implementation_status_for(CheckStatus.PASS, 1.0) == "Implemented"
+    assert implementation_status_for(CheckStatus.FAIL, 0.28) == "PartiallyImplemented"
+    assert implementation_status_for(CheckStatus.FAIL, 0.06) == "PartiallyImplemented"
+    assert implementation_status_for(CheckStatus.WARNING, 0.85) == "PartiallyImplemented"
+    assert implementation_status_for(CheckStatus.FAIL, 0.0) == "NotImplemented"
+
+
+def test_status_without_a_score_falls_back_to_the_check_result():
+    assert implementation_status_for(CheckStatus.WARNING, None) == "PartiallyImplemented"
+    assert implementation_status_for(CheckStatus.FAIL, None) == "NotImplemented"
+
+
+def test_errors_and_skips_leave_the_status_alone():
+    assert implementation_status_for(CheckStatus.ERROR, 0.0) is None
+    assert implementation_status_for(CheckStatus.SKIPPED, None) is None
+
+
+def test_a_failing_check_on_a_partly_working_control_is_written_as_partial(fake_graph):
+    from app.connectors.models import CheckCategory, CheckResult
+    from app.connectors.registry import CheckRegistry
+    result = CheckResult(check_id="sca", check_name="SCA", category=CheckCategory.ENDPOINT, source="wazuh",
+                         tenant_id="t", status=CheckStatus.FAIL, score=0.28, detail="296 of 412 failing",
+                         control_title="Secure Configuration Baseline")
+    CheckRegistry()._write_to_graph(result)
+    query, params = fake_graph.write.call_args[0]
+    assert query == queries.WRITE_CHECK_RESULT
+    assert params["implementation_status"] == "PartiallyImplemented"
+    assert params["score"] == 0.28 and params["control_title"] == "Secure Configuration Baseline"

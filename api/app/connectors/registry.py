@@ -16,6 +16,27 @@ from .models import CheckResult, CheckStatus
 logger = logging.getLogger(__name__)
 
 
+def implementation_status_for(status: CheckStatus, score) -> str | None:
+    """The control status a check result implies, graded by how well the
+    control is working rather than by pass/fail alone, so the status agrees
+    with the control's health everywhere it is shown.
+
+    PASS                -> Implemented
+    WARNING or FAIL     -> PartiallyImplemented while any of it works
+                           (score above 0), NotImplemented at 0
+    anything else       -> None: leave the status as it was
+    """
+    if status == CheckStatus.PASS:
+        return "Implemented"
+    if status in (CheckStatus.WARNING, CheckStatus.FAIL):
+        try:
+            working = float(score) > 0
+        except (TypeError, ValueError):
+            working = status == CheckStatus.WARNING
+        return "PartiallyImplemented" if working else "NotImplemented"
+    return None
+
+
 class CheckRegistry:
     """
     Central registry mapping check_ids to the adapter class that implements them.
@@ -137,10 +158,11 @@ class CheckRegistry:
         self._apply_progress(result)
         try:
             from app.graph.connection import run_write
-            from graphrisk_core.queries import WRITE_CHECK_RESULT
-            run_write(WRITE_CHECK_RESULT, {
+            from app.graph import queries
+            run_write(queries.WRITE_CHECK_RESULT, {
                 **result.to_neo4j_params(),
                 "control_title": result.control_title,
+                "implementation_status": implementation_status_for(result.status, result.score),
             })
         except Exception as e:
             logger.error(f"Graph write failed for {result.check_id}: {e}")
