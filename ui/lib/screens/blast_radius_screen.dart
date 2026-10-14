@@ -13,7 +13,10 @@ class BlastRadiusScreen extends StatefulWidget {
   /// screen when the Regulatory Obligations layer has nothing to show
   /// because no profile is set.
   final VoidCallback? onManageProfile;
-  const BlastRadiusScreen({super.key, this.onManageProfile});
+  /// Control to open on first load (e.g. tapped on the dashboard); falls
+  /// back to the first control when missing or not one of the tenant's.
+  final String? initialControlId;
+  const BlastRadiusScreen({super.key, this.onManageProfile, this.initialControlId});
   @override
   State<BlastRadiusScreen> createState() => _BlastRadiusScreenState();
 }
@@ -93,7 +96,10 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
           .toList();
       setState(() { _controls = controls; _controlsLoading = false; });
       if (controls.isNotEmpty) {
-        final first = controls.first['id'].toString();
+        final wanted = widget.initialControlId;
+        final first = (wanted != null && controls.any((c) => c['id'].toString() == wanted))
+            ? wanted
+            : controls.first['id'].toString();
         _ctrl.text = first;
         _run(first);
       }

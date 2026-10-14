@@ -7,6 +7,11 @@ class DashboardSummary {
   final int    implementedControls;
   final int    totalAssets;
   final List<TopRisk> topRisks;
+  /// Average health of the organisation's controls, 0-100 (null when there
+  /// are none or the API is older than the per-control breakdown).
+  final double? avgControlHealthPct;
+  final int    workingControls;
+  final List<ControlHealth> controls;
 
   DashboardSummary({
     required this.totalRisks,
@@ -16,6 +21,9 @@ class DashboardSummary {
     required this.implementedControls,
     required this.totalAssets,
     required this.topRisks,
+    this.avgControlHealthPct,
+    this.workingControls = 0,
+    this.controls = const [],
   });
 
   factory DashboardSummary.fromJson(Map<String, dynamic> j) => DashboardSummary(
@@ -27,6 +35,41 @@ class DashboardSummary {
     totalAssets:         j['assets']['total']      ?? 0,
     topRisks: (j['risks']['top_risks'] as List? ?? [])
         .map((r) => TopRisk.fromJson(r)).toList(),
+    avgControlHealthPct: (j['controls']['avg_health_pct'] as num?)?.toDouble(),
+    workingControls:     j['controls']['working'] ?? 0,
+    controls: (j['controls']['items'] as List? ?? [])
+        .map((c) => ControlHealth.fromJson(Map<String, dynamic>.from(c))).toList(),
+  );
+}
+
+/// One of the organisation's controls and how well it is working now:
+/// health comes from the latest connector check for it, or from the status
+/// set by hand when nothing measures it.
+class ControlHealth {
+  final String  id;
+  final String  title;
+  final String? status;
+  final double  health;   // 0..1
+  final String  state;    // working | partial | not_working
+  final bool    measured;
+  final String? source;
+  final String? detail;
+  final String? lastTestedAt;
+
+  ControlHealth({required this.id, required this.title, this.status, required this.health,
+                 required this.state, required this.measured, this.source, this.detail,
+                 this.lastTestedAt});
+
+  factory ControlHealth.fromJson(Map<String, dynamic> j) => ControlHealth(
+    id:           j['id']?.toString() ?? '',
+    title:        j['title']?.toString() ?? 'Control',
+    status:       j['status']?.toString(),
+    health:       (j['health'] as num? ?? 0).toDouble(),
+    state:        j['state']?.toString() ?? 'not_working',
+    measured:     j['measured'] == true,
+    source:       j['source']?.toString(),
+    detail:       j['detail']?.toString(),
+    lastTestedAt: j['last_tested_at']?.toString(),
   );
 }
 

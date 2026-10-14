@@ -5,6 +5,50 @@ from app.auth.jwt_auth import get_current_user, CurrentUser
 
 router = APIRouter()
 
+# Health for a control whose status was set by hand and never measured
+# (same mapping the controls API uses when a status is chosen).
+STATUS_HEALTH = {"Implemented": 1.0, "PartiallyImplemented": 0.5, "Planned": 0.2, "NotImplemented": 0.0}
+# A control at or above this health counts as fully working, matching the
+# "met" threshold used for framework requirements.
+WORKING = 0.95
+
+
+def _health(row: dict) -> float:
+    h = row.get("health")
+    if h is None:
+        h = STATUS_HEALTH.get(row.get("status") or "", 0.0)
+    try:
+        h = float(h)
+    except (TypeError, ValueError):
+        return 0.0
+    return min(max(h, 0.0), 1.0)
+
+
+def summarise_controls(rows: list[dict]) -> dict:
+    """The organisation's controls with their current health, plus totals:
+    how many are fully working, partly working or not working, and the
+    average health across all of them (None when there are no controls)."""
+    items = []
+    for r in rows:
+        h = _health(r)
+        state = "working" if h >= WORKING else "partial" if h > 0 else "not_working"
+        items.append({
+            "id": r.get("id"), "title": r.get("title"), "status": r.get("status"),
+            "health": round(h, 4), "state": state,
+            "measured": r.get("source") is not None,
+            "source": r.get("source"), "detail": r.get("detail"),
+            "last_tested_at": r.get("last_tested_at"),
+        })
+    total = len(items)
+    counts = {s: sum(1 for i in items if i["state"] == s) for s in ("working", "partial", "not_working")}
+    return {
+        "total": total,
+        "implemented": sum(1 for r in rows if r.get("status") == "Implemented"),
+        **counts,
+        "avg_health_pct": round(sum(i["health"] for i in items) / total * 100, 1) if total else None,
+        "items": items,
+    }
+
 @router.get("/summary")
 async def dashboard_summary(user: CurrentUser = Depends(get_current_user)):
     """
@@ -13,17 +57,16 @@ async def dashboard_summary(user: CurrentUser = Depends(get_current_user)):
     """
     tenant_id = user.graph_tenant_id
     risks    = run_query(queries.DASHBOARD_RISKS_SUMMARY, {"t": tenant_id})
-    controls = run_query(queries.DASHBOARD_CONTROLS_SUMMARY, {"t": tenant_id})
+    controls = run_query(queries.DASHBOARD_CONTROLS_DETAIL, {"t": tenant_id}) or []
     assets   = run_query(queries.DASHBOARD_ASSETS_SUMMARY, {"t": tenant_id})
     top      = run_query(queries.TOP_RISKS, {"tenant_id": tenant_id})
     vulns    = run_query(queries.VULNERABILITY_STATS, {})
     r = risks[0]    if risks    else {}
-    c = controls[0] if controls else {}
     a = assets[0]   if assets   else {}
     return {
         "tenant_id": tenant_id,
         "risks":    {"total": r.get("total",0), "open": r.get("open",0), "avg_score": round(r.get("avg_score") or 0,2), "top_risks": top},
-        "controls": {"total": c.get("total",0), "implemented": c.get("implemented",0)},
+        "controls": summarise_controls(controls),
         "assets":   {"total": a.get("total",0)},
         "vulnerabilities": {"by_source": vulns}
     }

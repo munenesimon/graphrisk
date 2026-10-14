@@ -99,13 +99,18 @@ final _router = GoRouter(
       routes: [
         GoRoute(
           path: '/dashboard',
-          builder: (context, state) =>
-              DashboardScreen(onNavigate: (i) => context.go(_tabPaths[i])),
+          builder: (context, state) => DashboardScreen(
+            onNavigate: (i) => context.go(_tabPaths[i]),
+            onOpenControl: (id) => context.go('/blast-radius?control=${Uri.encodeQueryComponent(id)}'),
+          ),
         ),
         GoRoute(
           path: '/blast-radius',
-          builder: (context, state) =>
-              BlastRadiusScreen(onManageProfile: () => context.go('/regulatory')),
+          builder: (context, state) => BlastRadiusScreen(
+            key: ValueKey('blast-${state.uri.queryParameters['control'] ?? ''}'),
+            onManageProfile: () => context.go('/regulatory'),
+            initialControlId: state.uri.queryParameters['control'],
+          ),
         ),
         GoRoute(
           path: '/frameworks',

@@ -325,3 +325,16 @@ RECONCILE_SCANNED_VULNERABILITIES = """
     FOREACH (_ IN CASE WHEN unlinked = 1 THEN [1] ELSE [] END | DELETE i)
     RETURN removed, sum(dropped) AS drivers_dropped, sum(unlinked) AS risks_unlinked
 """
+
+
+# Each of the organisation's own controls with how well it is working now,
+# for the dashboard. effectiveness_score is the control's health (0..1):
+# written by the latest connector check for it, or set from the status
+# chosen by hand. last_check_* say which check set it and when.
+DASHBOARD_CONTROLS_DETAIL = """
+    MATCH (c:Control {tenant_id: $t})
+    RETURN c.id AS id, c.title AS title, c.implementation_status AS status,
+           c.effectiveness_score AS health, c.last_check_source AS source,
+           c.last_check_detail AS detail, toString(c.last_tested_at) AS last_tested_at
+    ORDER BY c.title
+"""
