@@ -109,7 +109,12 @@ final _router = GoRouter(
         ),
         GoRoute(
           path: '/frameworks',
-          builder: (context, state) => const FrameworksScreen(),
+          // Keyed on the full path: this list stays mounted underneath a
+          // framework's detail page, so without a new key it would keep the
+          // totals it loaded before any attestation was recorded there.
+          // Coming back from /frameworks/<id> to /frameworks now builds a
+          // fresh screen that reloads the adherence figures.
+          builder: (context, state) => FrameworksScreen(key: ValueKey('frameworks-${state.uri.path}')),
           routes: [
             GoRoute(
               path: ':id',
