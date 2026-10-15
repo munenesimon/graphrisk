@@ -197,6 +197,39 @@ PATCH_FLOOR_PER_DEVICE = PROGRESS_FLOOR_PER_DEVICE
 MAX_PROCESSES_PER_AGENT = 1000
 MAX_PACKAGES_PER_AGENT = 2000
 
+# ── Findings the device itself says are fixed ───────────────────────────────
+# Wazuh's vulnerability index can keep findings for a package version the
+# agent no longer reports (a lost change event, a scanner restart that
+# restores old state). When the device's own complete software inventory
+# shows that exact name and version is gone, the finding is held back as
+# "fixed on the device, awaiting rescan": not ingested, not scored, and
+# listed on the asset page. If more than this share of a device's vulnerable
+# packages would be held back, the names probably don't line up between the
+# two sources, so nothing is held back for that device (judged only once
+# there are enough packages to tell, STALE_SAFETY_MIN_PACKAGES).
+STALE_SAFETY_SHARE = 0.5
+STALE_SAFETY_MIN_PACKAGES = 4
+
+
+def stale_packages(finding_packages: set[tuple[str, str]],
+                   installed: set[tuple[str, str]] | None) -> set[tuple[str, str]]:
+    """The (name, version) pairs that have findings but that the device's
+    complete inventory no longer lists. Empty when the inventory is missing
+    or incomplete (absence can't be confirmed) or when too many would be
+    held back to trust the match (see STALE_SAFETY_SHARE)."""
+    if not installed or not finding_packages:
+        return set()
+    stale = {p for p in finding_packages if p not in installed}
+    if len(finding_packages) >= STALE_SAFETY_MIN_PACKAGES and len(stale) > STALE_SAFETY_SHARE * len(finding_packages):
+        logger.warning(f"{len(stale)} of {len(finding_packages)} vulnerable packages are missing from the "
+                       "device inventory -- names may not match, so none are held back")
+        return set()
+    return stale
+
+
+def _pkg_key(name, version) -> tuple[str, str]:
+    return (str(name or "").strip(), str(version or "").strip())
+
 # CIS benchmark checks for optional Windows features that only apply where
 # the feature is turned on. Microsoft Defender Application Guard is optional
 # (and deprecated); Wazuh can't see whether it's enabled, so these checks
@@ -420,6 +453,21 @@ class WazuhAdapter(BaseConnector):
         # Complete only when every matching finding came back. A truncated
         # list must never be read as "the rest were fixed" (see the
         # registry's reconcile step).
+        # Hold back findings for package versions the device no longer has
+        # (see stale_packages). They aren't ingested, so the registry drops
+        # their links on a complete fetch, and the asset page lists them.
+        self._stale_findings = {}
+        for agent_id, entries in list(by_agent.items()):
+            pairs = {_pkg_key(e["package"]["name"], e["package"].get("version"))
+                     for e in entries if e.get("package")}
+            stale = stale_packages(pairs, self._installed_packages(agent_id)) if pairs else set()
+            if stale:
+                keep, held = [], []
+                for e in entries:
+                    pkg = e.get("package")
+                    (held if pkg and _pkg_key(pkg["name"], pkg.get("version")) in stale else keep).append(e)
+                by_agent[agent_id] = keep
+                self._stale_findings[agent_id] = held
         hits = resp.get("hits") or {}
         total = hits.get("total")
         total = total.get("value") if isinstance(total, dict) else total
@@ -444,17 +492,73 @@ class WazuhAdapter(BaseConnector):
             "query": {"terms": {"agent.id": agent_ids}},
             "aggs": {"by_agent": {
                 "terms": {"field": "agent.id", "size": len(agent_ids)},
-                "aggs": {"by_severity": {"terms": {"field": "vulnerability.severity", "size": 10}}},
+                "aggs": {
+                    "by_severity": {"terms": {"field": "vulnerability.severity", "size": 10}},
+                    # Per package and version too, so findings for versions
+                    # the device no longer has can be left out of the counts.
+                    "by_package": {"terms": {"field": "package.name", "size": MAX_PACKAGES_PER_AGENT}, "aggs": {
+                        "by_version": {"terms": {"field": "package.version", "size": 20}, "aggs": {
+                            "by_severity": {"terms": {"field": "vulnerability.severity", "size": 10}}}}}},
+                },
             }},
         })
         out: dict[str, dict[str, int]] = {}
+        self._stale_counts = {}
+        self._stale_summary = {}
         buckets = (((resp.get("aggregations") or {}).get("by_agent") or {}).get("buckets")) or []
         for b in buckets:
+            if not b.get("key"):
+                continue
+            agent_id = str(b["key"])
             sev = {s.get("key"): s.get("doc_count", 0)
                    for s in ((b.get("by_severity") or {}).get("buckets") or []) if s.get("key")}
-            if b.get("key"):
-                out[str(b["key"])] = sev
+            per_pkg: dict[tuple[str, str], dict[str, int]] = {}
+            for pb in ((b.get("by_package") or {}).get("buckets") or []):
+                for vb in ((pb.get("by_version") or {}).get("buckets") or []):
+                    per_pkg[_pkg_key(pb.get("key"), vb.get("key"))] = {
+                        s.get("key"): s.get("doc_count", 0)
+                        for s in ((vb.get("by_severity") or {}).get("buckets") or []) if s.get("key")}
+            stale = stale_packages(set(per_pkg), self._installed_packages(agent_id)) if per_pkg else set()
+            if stale:
+                held: dict[str, int] = {}
+                for key in stale:
+                    for s, n in per_pkg[key].items():
+                        held[s] = held.get(s, 0) + n
+                sev = {s: max(n - held.get(s, 0), 0) for s, n in sev.items()}
+                self._stale_counts[agent_id] = held
+                self._stale_summary[agent_id] = sorted(
+                    ({"name": k[0], "version": k[1], "findings": sum(per_pkg[k].values())} for k in stale),
+                    key=lambda x: -x["findings"])
+            out[agent_id] = sev
         return out
+
+    def _remember_installed(self, agent_id: str, packages: dict) -> None:
+        """Cache an agent's installed (name, version) pairs from a
+        syscollector packages response -- None unless the list is complete,
+        since a partial list can't show that something is gone."""
+        cache = self.__dict__.setdefault("_installed_cache", {})
+        items = packages.get("affected_items") or []
+        total = packages.get("total_affected_items")
+        if not items or not isinstance(total, int) or total > len(items) \
+                or not any("version" in p for p in items):
+            cache[agent_id] = None
+            return
+        cache[agent_id] = {_pkg_key(p.get("name"), p.get("version")) for p in items if p.get("name")}
+
+    def _installed_packages(self, agent_id: str) -> set[tuple[str, str]] | None:
+        """The agent's complete installed-package list as (name, version)
+        pairs, fetched once per run; None when it can't be read in full."""
+        cache = self.__dict__.setdefault("_installed_cache", {})
+        if agent_id not in cache:
+            try:
+                data = self._wazuh_get(f"/syscollector/{agent_id}/packages",
+                                       params={"limit": MAX_PACKAGES_PER_AGENT,
+                                               "select": "name,version"}).get("data") or {}
+                self._remember_installed(agent_id, data)
+            except Exception as e:
+                logger.debug(f"Wazuh packages for agent {agent_id} unavailable: {e}")
+                cache[agent_id] = None
+        return cache[agent_id]
 
     def _fetch_inventory(self, agent_id: str, platform: str | None = None) -> dict | None:
         """
@@ -515,8 +619,11 @@ class WazuhAdapter(BaseConnector):
 
         # Names too (not just the count): installed security products show
         # up here even when they aren't running.
-        packages = get("packages", {"limit": MAX_PACKAGES_PER_AGENT, "select": "name"})
-        if packages is None:
+        packages = get("packages", {"limit": MAX_PACKAGES_PER_AGENT, "select": "name,version"})
+        if packages is not None:
+            self._remember_installed(agent_id, packages)
+        else:
+            self.__dict__.setdefault("_installed_cache", {})[agent_id] = None
             # Older managers may reject "select" -- still get the count.
             packages = get("packages", {"limit": 1})
         hotfixes = get("hotfixes", {"limit": 10})
@@ -590,6 +697,12 @@ class WazuhAdapter(BaseConnector):
                 "total": sum(severity_counts.values()),
                 "scanner": "Wazuh vulnerability detection",
             }
+        held = (getattr(self, "_stale_summary", None) or {}).get(agent.get("id"))
+        if held:
+            profile.setdefault("software", {})["awaiting_rescan"] = [
+                f"{h['name']} {h['version']}: {h['findings']} finding{'s' if h['findings'] != 1 else ''}"
+                for h in held]
+            profile.setdefault("vulnerabilities", {})["awaiting_rescan"] = sum(h["findings"] for h in held)
         return profile
 
     def _failed_sca_checks(self, agent_id: str, policy_id: str | None, os_name: str | None = None) -> list[dict]:
@@ -857,10 +970,21 @@ class WazuhAdapter(BaseConnector):
             total_count=total,
             detail=(f"{by_sev['Critical']} critical, {by_sev['High']} high, {by_sev['Medium']} medium and "
                     f"{by_sev['Low']} low findings open across {total} scanned device{'s' if total != 1 else ''}; "
-                    f"{clean} with no Critical or High"),
+                    f"{clean} with no Critical or High" + self._awaiting_rescan_note()),
             control_title=self._control_title("wazuh_vulnerability_patching"),
             raw_data={"progress": progress(open_weight, total)},
         )
+
+    def _awaiting_rescan_note(self) -> str:
+        """Run-detail suffix for findings held back as fixed on the device."""
+        summary = getattr(self, "_stale_summary", None) or {}
+        findings = sum(h["findings"] for held in summary.values() for h in held)
+        if not findings:
+            return ""
+        packages = sum(len(held) for held in summary.values())
+        return (f" ({findings} finding{'s' if findings != 1 else ''} in {packages} package"
+                f"{'s' if packages != 1 else ''} the device no longer reports are awaiting rescan "
+                "and not counted)")
 
     def _check_sca_compliance(self) -> CheckResult:
         """

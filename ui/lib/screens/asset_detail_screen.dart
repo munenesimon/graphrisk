@@ -338,7 +338,7 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
       final label = section == 'extra' ? field : _label('$section.$field');
       // One item per line: each is a sentence of its own (a product and how
       // it was detected, or a setting to change).
-      if (section == 'protection' && value is List) {
+      if ((section == 'protection' || (section == 'software' && field == 'awaiting_rescan')) && value is List) {
         rows.add(_FieldRow(label: label, value: value.map((e) => e.toString()).join('\n')));
         continue;
       }
@@ -417,8 +417,10 @@ const _fieldLabels = <String, String>{
   'software.installed_count': 'Installed packages',
   'software.hotfixes_count': 'Updates installed',
   'software.recent_hotfixes': 'Recent updates',
+  'software.awaiting_rescan': 'Fixed on the device, awaiting rescan',
   'vulnerabilities.counts_by_severity': 'Findings by severity',
   'vulnerabilities.total': 'Total findings',
+  'vulnerabilities.awaiting_rescan': 'Awaiting rescan (not counted)',
   'vulnerabilities.scanner': 'Scanner',
   'protection.status': 'Status',
   'protection.product': 'Product',
