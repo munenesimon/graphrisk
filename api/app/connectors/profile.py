@@ -26,6 +26,7 @@ than dropped, so vendor-specific detail is never silently lost.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 # section -> the fields it may contain. Every field is optional.
@@ -194,6 +195,19 @@ def severity_label(value) -> str | None:
     profile's Critical/High/Medium/Low; None if it isn't one of those."""
     v = str(value or "").strip().capitalize()
     return v if v in _SEVERITY_RANK else None
+
+
+def package_label(name, version) -> str:
+    """A package's display name: name and version, without repeating the
+    version when the name already contains it (Windows names often do, e.g.
+    "Wireshark 4.4.5 x64" at version 4.4.5)."""
+    name = str(name or "").strip()
+    version = str(version or "").strip()
+    if not version:
+        return name
+    if re.search(r"(?<![\w.])" + re.escape(version) + r"(?![\w.])", name):
+        return name
+    return f"{name} {version}".strip()
 
 
 def group_vulnerable_packages(findings: list[dict]) -> list[dict]:

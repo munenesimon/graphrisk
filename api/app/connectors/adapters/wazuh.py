@@ -62,7 +62,7 @@ from ..base import BaseConnector, _assert_safe_url
 from ..checks import (no_data_result, PROGRESS_FLOOR_PER_DEVICE, SEVERITY_WEIGHTS, first_run_score,
                       open_weight as shared_open_weight, progress)
 from ..models import CheckResult, CheckStatus, CheckCategory
-from ..profile import group_vulnerable_packages
+from ..profile import group_vulnerable_packages, package_label
 
 logger = logging.getLogger(__name__)
 
@@ -700,7 +700,7 @@ class WazuhAdapter(BaseConnector):
         held = (getattr(self, "_stale_summary", None) or {}).get(agent.get("id"))
         if held:
             profile.setdefault("software", {})["awaiting_rescan"] = [
-                f"{h['name']} {h['version']}: {h['findings']} finding{'s' if h['findings'] != 1 else ''}"
+                f"{package_label(h['name'], h['version'])}: {h['findings']} finding{'s' if h['findings'] != 1 else ''}"
                 for h in held]
             profile.setdefault("vulnerabilities", {})["awaiting_rescan"] = sum(h["findings"] for h in held)
         return profile

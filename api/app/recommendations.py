@@ -32,6 +32,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable, Mapping
 
+from app.connectors.profile import package_label
 from app.scoring import assess_risk, explain_risk
 
 PRIORITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -77,7 +78,7 @@ def _helps(category: str, risks: Iterable[Mapping]) -> dict | None:
 def _patch_actions(fix_first: list, risks: list, source: str | None) -> list[dict]:
     out = []
     for pkg in (fix_first or [])[:MAX_PATCH_ACTIONS]:
-        name = " ".join(x for x in (pkg.get("name"), pkg.get("version")) if x)
+        name = package_label(pkg.get("name"), pkg.get("version"))
         count = pkg.get("cve_count") or len(pkg.get("cves") or [])
         sev = pkg.get("max_severity") or "Unknown"
         cvss = pkg.get("max_cvss") or 0

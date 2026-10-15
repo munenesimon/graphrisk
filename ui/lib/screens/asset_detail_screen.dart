@@ -643,7 +643,10 @@ class _PackageRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final version = pkg.version ?? '';
-    final title = version.isEmpty ? pkg.name : '${pkg.name} $version';
+    // Windows names often already carry the version ("Wireshark 4.4.5 x64").
+    final inName = version.isNotEmpty &&
+        RegExp('(?<![\\w.])${RegExp.escape(version)}(?![\\w.])').hasMatch(pkg.name);
+    final title = (version.isEmpty || inName) ? pkg.name : '${pkg.name} $version';
     final Color accent = pkg.ransomware ? kRed : Colors.white24;
     return Container(
       width: double.infinity,

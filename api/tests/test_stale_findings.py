@@ -114,7 +114,18 @@ def test_asset_page_lists_what_is_awaiting_rescan():
         result = WazuhAdapter(tenant_id="t", config=_wazuh_config_with_indexer(
             collect_inventory=False)).run_check("wazuh_agent_connectivity")
     profile = result.discovered_assets[0]["profile"]
-    assert profile["software"]["awaiting_rescan"] == ["Wireshark 4.4.5 x64 4.4.5: 84 findings"]
+    assert profile["software"]["awaiting_rescan"] == ["Wireshark 4.4.5 x64: 84 findings"]
     assert profile["vulnerabilities"]["awaiting_rescan"] == 84
     assert profile["vulnerabilities"]["counts_by_severity"] == {"High": 0}
     assert "vulnerabilities" not in result.discovered_assets[0]
+
+
+def test_package_label_does_not_repeat_a_version_already_in_the_name():
+    from app.connectors.profile import package_label
+    assert package_label("Wireshark 4.4.5 x64", "4.4.5") == "Wireshark 4.4.5 x64"
+    assert package_label("Oracle VirtualBox 7.1.6", "7.1.6") == "Oracle VirtualBox 7.1.6"
+    assert package_label("n8n", "1.120.4") == "n8n 1.120.4"
+    # A longer, more exact version is still shown.
+    assert package_label("Microsoft ASP.NET Core 8.0.14 - Shared Framework (x86)", "8.0.14.25112") == \
+        "Microsoft ASP.NET Core 8.0.14 - Shared Framework (x86) 8.0.14.25112"
+    assert package_label("Tool", None) == "Tool"
