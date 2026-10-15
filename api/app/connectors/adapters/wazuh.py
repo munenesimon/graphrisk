@@ -185,6 +185,20 @@ PROTECTION_PACKAGES: tuple[tuple[str, str], ...] = (
     (r"\bmicrosoft defender for endpoint\b|\bmdatp\b", "Microsoft Defender for Endpoint"),
 )
 
+# Windows services that mean a protection product is running, from Wazuh's
+# services inventory (wazuh-states-inventory-services-*). Unlike the process
+# list, the service state is readable even when the engine is a protected
+# process the agent can't open -- so a RUNNING service confirms the product
+# is running. Service id as Windows names it -> (product, kind).
+PROTECTION_SERVICES: dict[str, tuple[str, str]] = {
+    "WinDefend":       ("Microsoft Defender Antivirus", "Antivirus"),
+    "Sense":           ("Microsoft Defender for Endpoint", "EDR"),
+    "CSFalconService": ("CrowdStrike Falcon", "EDR"),
+    "SentinelAgent":   ("SentinelOne", "EDR"),
+    "ekrn":            ("ESET", "Antivirus"),
+    "MBAMService":     ("Malwarebytes", "Antivirus"),
+}
+
 # Vulnerability patching: how much one open finding of each severity counts
 # toward the patch-management load (Critical ≈ 10 Mediums), and the smallest
 # baseline per device so a handful of findings isn't scored as 0%.
@@ -532,6 +546,34 @@ class WazuhAdapter(BaseConnector):
             out[agent_id] = sev
         return out
 
+    def _fetch_protection_services(self, agent_ids: list[str]) -> dict[str, dict[str, str]]:
+        """State of known protection services per agent, from Wazuh's
+        services inventory in the indexer: {agent_id: {service_id: state}}.
+        {} when the indexer isn't configured or the index isn't there --
+        then only the process list is used, as before."""
+        if not agent_ids or not self._effective_indexer_url():
+            return {}
+        try:
+            resp = self._indexer_search("wazuh-states-inventory-services-*", {
+                "size": len(agent_ids) * len(PROTECTION_SERVICES),
+                "_source": ["agent.id", "service.id", "service.state"],
+                "query": {"bool": {"filter": [
+                    {"terms": {"agent.id": agent_ids}},
+                    {"terms": {"service.id": sorted(PROTECTION_SERVICES)}},
+                ]}},
+            })
+        except Exception as e:
+            logger.info(f"Wazuh services inventory unavailable, using processes only: {e}")
+            return {}
+        out: dict[str, dict[str, str]] = {}
+        for hit in (resp.get("hits") or {}).get("hits") or []:
+            src = hit.get("_source") or {}
+            agent_id = (src.get("agent") or {}).get("id")
+            svc = src.get("service") or {}
+            if agent_id and svc.get("id"):
+                out.setdefault(str(agent_id), {})[str(svc["id"])] = str(svc.get("state") or "")
+        return out
+
     def _remember_installed(self, agent_id: str, packages: dict) -> None:
         """Cache an agent's installed (name, version) pairs from a
         syscollector packages response -- None unless the list is complete,
@@ -644,7 +686,8 @@ class WazuhAdapter(BaseConnector):
         package_names = None if packages is None else [
             str(p.get("name")) for p in packages.get("affected_items") or [] if p.get("name")
         ]
-        protection = detect_protection(process_names, package_names, platform=platform)
+        protection = detect_protection(process_names, package_names, platform=platform,
+                                       services=(getattr(self, "_protection_services", None) or {}).get(agent_id))
         if protection:
             prof["protection"] = protection
 
@@ -811,6 +854,8 @@ class WazuhAdapter(BaseConnector):
         disconnected = total - active
 
         inventory: dict[str, dict] = {}
+        self._protection_services = self._fetch_protection_services(
+            [a.get("id") for a in agents if a.get("status") == "active"])
         if self.config.get("collect_inventory", True):
             for a in agents[:MAX_AGENTS_PER_INVENTORY]:
                 inv = self._fetch_inventory(a.get("id"), (a.get("os") or {}).get("platform"))
@@ -1093,7 +1138,7 @@ class WazuhAdapter(BaseConnector):
 
 
 def detect_protection(process_names: set[str] | None, package_names: list[str] | None,
-                      platform: str | None = None) -> dict | None:
+                      platform: str | None = None, services: dict[str, str] | None = None) -> dict | None:
     """
     What endpoint protection is present on one device, as the profile's
     "protection" section. Pure function over data syscollector already
@@ -1108,7 +1153,7 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
 
     Returns None when there's no evidence either way (nothing could be read).
     """
-    if process_names is None and package_names is None:
+    if process_names is None and package_names is None and not services:
         return None
 
     running: dict[str, tuple[str, str]] = {}
@@ -1116,6 +1161,19 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
         hit = PROTECTION_PROCESSES.get(proc)
         if hit and hit[0] not in running:
             running[hit[0]] = (hit[1], proc)
+    # A protection service the services inventory reports as running is
+    # confirmation too -- and the only one available when the engine is a
+    # protected process the process list can't see.
+    stopped: list[str] = []
+    for service_id, state in sorted((services or {}).items()):
+        hit = PROTECTION_SERVICES.get(service_id)
+        if not hit:
+            continue
+        if str(state or "").upper() == "RUNNING":
+            if hit[0] not in running:
+                running[hit[0]] = (hit[1], f"Windows service {service_id}")
+        elif hit[0] not in stopped:
+            stopped.append(hit[0])
 
     # Can the process list rule an antivirus out? Not if it's unknown, and
     # not on a Windows device whose list is missing every protected core
@@ -1124,7 +1182,7 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
               and not (process_names & WINDOWS_PROTECTED_CORE))
     can_rule_out = process_names is not None and not hidden
 
-    installed: list[str] = []
+    installed: list[str] = [p for p in stopped if p not in running]
     for pkg in package_names or ():
         for pattern, product in PROTECTION_PACKAGES:
             if re.search(pattern, pkg, re.IGNORECASE):
@@ -1134,7 +1192,8 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
 
     detected = [f"{product} ({kind}) — running ({proc})" for product, (kind, proc) in running.items()]
     detected += [
-        f"{product} — installed, not seen running" if can_rule_out
+        f"{product} — installed, service not running" if product in stopped
+        else f"{product} — installed, not seen running" if can_rule_out
         else f"{product} — installed (couldn't check whether it's running)"
         for product in installed
     ]
