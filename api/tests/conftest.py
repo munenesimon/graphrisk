@@ -94,6 +94,7 @@ GRAPH_MODULES = [
     "app.api.v1.organisation",
     "app.api.v1.risks",
     "app.connectors.registry",
+    "app.sector_frameworks",
     "app.graph.connection",
 ]
 

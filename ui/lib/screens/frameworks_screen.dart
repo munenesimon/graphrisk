@@ -47,6 +47,7 @@ class _FrameworksScreenState extends State<FrameworksScreen> {
     }
     final obligations = (_data?['obligations'] as List? ?? []).cast<Map<String, dynamic>>();
     final other = (_data?['other'] as List? ?? []).cast<Map<String, dynamic>>();
+    final hidden = (_data?['hidden_sector_frameworks'] as List? ?? []).cast<Map<String, dynamic>>();
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -94,6 +95,10 @@ class _FrameworksScreenState extends State<FrameworksScreen> {
           if (_showOther) ...[
             const SizedBox(height: 12),
             ...other.map((f) => _FrameworkCard(framework: f, emphasised: false)),
+          ],
+          if (hidden.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            _HiddenSectorNote(hidden: hidden, onManage: () => context.go('/regulatory')),
           ],
         ]),
       ),
@@ -218,6 +223,41 @@ class _FrameworkCard extends StatelessWidget {
         onTap: () => context.go('/frameworks/${Uri.encodeComponent(id)}?name=${Uri.encodeQueryComponent(name)}'),
         child: card,
       ),
+    );
+  }
+}
+
+/// Sector-specific frameworks (a bank's or card handler's obligations) the
+/// organisation hasn't switched on: named here so it's clear they were left
+/// out on purpose, with a way to switch them on.
+class _HiddenSectorNote extends StatelessWidget {
+  final List<Map<String, dynamic>> hidden;
+  final VoidCallback onManage;
+  const _HiddenSectorNote({required this.hidden, required this.onManage});
+
+  @override
+  Widget build(BuildContext context) {
+    final names = hidden.map((h) => frameworkShortName(h['framework']?.toString() ?? '')).join(', ');
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: kSurface2.withOpacity(0.5),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(children: [
+        const Icon(Icons.visibility_off_outlined, color: Colors.white38, size: 18),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            '${hidden.length} sector-specific framework${hidden.length == 1 ? ' is' : 's are'} hidden '
+            '($names) because ${hidden.length == 1 ? 'it only applies' : 'they only apply'} to certain '
+            'kinds of organisation. Switch on any that apply to you.',
+            style: const TextStyle(color: Colors.white54, fontSize: 12, height: 1.4),
+          ),
+        ),
+        const SizedBox(width: 8),
+        TextButton(onPressed: onManage, child: const Text('Your sector')),
+      ]),
     );
   }
 }

@@ -365,3 +365,12 @@ WRITE_CHECK_RESULT = """
     }
     RETURN c.title AS control, risks_updated
 """
+
+# Which framework each requirement a control satisfies directly belongs to,
+# so blast radius can drop the requirements of sector-specific frameworks
+# the organisation hasn't switched on (see app/sector_frameworks.py).
+# BLAST_RADIUS_CONTROL returns only the bare references.
+BLAST_RADIUS_DIRECT_REFS = """
+    MATCH (c:Control {id: $control_id, tenant_id: $tenant_id})-[:SATISFIES]->(fc:FrameworkControl)-[:PART_OF]->(f:Framework)
+    RETURN DISTINCT f.name AS framework, fc.control_reference AS reference
+"""

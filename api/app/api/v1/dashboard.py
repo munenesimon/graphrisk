@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from app.graph.connection import run_query
 from app.graph import queries
 from app.auth.jwt_auth import get_current_user, CurrentUser
+from app.sector_frameworks import is_hidden, profile_framework_names, sector_info
 
 router = APIRouter()
 
@@ -96,5 +97,9 @@ async def framework_coverage(user: CurrentUser = Depends(get_current_user)):
     a query parameter.
     """
     tenant_id = user.graph_tenant_id
-    result = run_query(queries.FRAMEWORK_COVERAGE_ALL, {"tenant_id": tenant_id})
+    result = run_query(queries.FRAMEWORK_COVERAGE_ALL, {"tenant_id": tenant_id}) or []
+    # Leave out sector-specific frameworks the organisation hasn't switched on.
+    if any(sector_info(r.get("framework")) for r in result):
+        switched_on = profile_framework_names(tenant_id)
+        result = [r for r in result if not is_hidden(r.get("framework"), r.get("framework") in switched_on)]
     return {"frameworks": result}

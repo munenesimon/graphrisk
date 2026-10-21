@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.graph.connection import run_query, run_write
 from app.graph import queries
 from app.auth.jwt_auth import get_current_user, CurrentUser
+from app.sector_frameworks import is_hidden, hidden_summary, sector_info
 
 router = APIRouter()
 
@@ -78,10 +79,15 @@ async def framework_adherence(user: CurrentUser = Depends(get_current_user)):
     no-evidence counts per framework."""
     rows = run_query(queries.FRAMEWORK_ADHERENCE_ALL, {"tenant_id": user.graph_tenant_id}) or []
     frameworks = [_summarise(r) for r in rows]
+    # Sector-specific frameworks the organisation hasn't switched on aren't
+    # shown, not even for reference -- see app/sector_frameworks.py.
+    hidden = [f["framework"] for f in frameworks if is_hidden(f["framework"], f["applies"])]
+    shown = [f for f in frameworks if f["framework"] not in hidden]
     return {
-        "has_profile": any(f["applies"] for f in frameworks),
-        "obligations": [f for f in frameworks if f["applies"]],
-        "other": [f for f in frameworks if not f["applies"]],
+        "has_profile": any(f["applies"] for f in shown),
+        "obligations": [f for f in shown if f["applies"]],
+        "other": [f for f in shown if not f["applies"]],
+        "hidden_sector_frameworks": hidden_summary(hidden),
     }
 
 
@@ -147,7 +153,10 @@ async def delete_attestation(framework_id: str, requirement_id: str = Query(min_
 
 @router.get("/")
 async def list_frameworks(user: CurrentUser = Depends(get_current_user)):
-    result = run_query(queries.GET_ALL_FRAMEWORKS, {})
+    result = run_query(queries.GET_ALL_FRAMEWORKS, {}) or []
+    # Every framework, so the regulatory profile can offer each one; a
+    # sector-specific framework carries the sector it's limited to.
+    result = [{**r, "sector": sector_info(r.get("name"))} for r in result]
     return {"frameworks": result, "total": len(result)}
 
 @router.get("/{framework_id}/controls")

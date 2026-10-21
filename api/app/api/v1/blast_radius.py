@@ -5,6 +5,7 @@ from app.graph import queries
 from app.auth.jwt_auth import get_current_user, CurrentUser
 from app.scoring import assess_risk, explain_risk
 from app.api.v1.organisation import read_risk_appetite
+from app.sector_frameworks import is_hidden, hidden_summary
 
 router = APIRouter()
 
@@ -43,7 +44,9 @@ def _group_frameworks(row: dict, scope: str):
       standards          voluntary benchmarks (NIST, CSF, CIS, PCI) -- always shown
       your_regulations   regulations in the organisation's regulatory profile
       other_regulations  regulations it isn't subject to -- only with scope="all"
-    Returns (grouped, included_names). included_names drives the flat
+    Sector-specific frameworks the organisation hasn't switched on are left
+    out of all three. Returns (grouped, included_names, hidden_names).
+    included_names drives the flat
     compliance_gaps list and framework_count, so existing clients (the
     Flutter blast-radius screen) keep working and follow the chosen scope.
     """
@@ -55,7 +58,11 @@ def _group_frameworks(row: dict, scope: str):
     unique = {}
     for f in frameworks:
         unique.setdefault(f["id"], f)   # reached both directly and via the crosswalk
-    fws = list(unique.values())
+    # Sector-specific frameworks (a bank's or card handler's obligations)
+    # are left out entirely until the organisation switches them on, under
+    # either scope -- see app/sector_frameworks.py.
+    hidden = [f["name"] for f in unique.values() if is_hidden(f["name"], f.get("in_profile"))]
+    fws = [f for f in unique.values() if f["name"] not in hidden]
     standards = [f["name"] for f in fws if f["category"] != "regulation"]
     yours = [f["name"] for f in fws if f["category"] == "regulation" and f["in_profile"]]
     other = [f["name"] for f in fws if f["category"] == "regulation" and not f["in_profile"]]
@@ -64,7 +71,22 @@ def _group_frameworks(row: dict, scope: str):
     if scope == "all":
         grouped["other_regulations"] = other
         included = included + other
-    return grouped, included
+    return grouped, included, hidden
+
+
+def _visible_framework_controls(tenant_id: str, control_id: str, refs: list, hidden: list) -> list:
+    """The control's direct requirement references, minus those that only
+    belong to hidden sector-specific frameworks. Unchanged if nothing is
+    hidden; if the lookup fails, drop nothing rather than everything."""
+    if not hidden or not refs:
+        return refs
+    try:
+        rows = run_query(queries.BLAST_RADIUS_DIRECT_REFS, {"control_id": control_id, "tenant_id": tenant_id}) or []
+    except Exception:
+        return refs
+    visible = {r.get("reference") for r in rows if r.get("framework") not in hidden}
+    hidden_only = {r.get("reference") for r in rows if r.get("framework") in hidden} - visible
+    return [ref for ref in refs if ref not in hidden_only]
 
 
 # How many driving CVEs to return per (risk, asset) link -- a single
@@ -152,7 +174,7 @@ async def blast_radius_control(
     if not result or not result[0].get("control_title"):
         raise HTTPException(status_code=404, detail=f"Control {control_id} not found")
     row = result[0]
-    grouped, included = _group_frameworks(row, scope)
+    grouped, included, hidden = _group_frameworks(row, scope)
     # Crosswalk requirements are "<FRAMEWORK_NAME> <ref>"; keep only those in scope
     mapped = [m for m in row.get("mapped_framework_controls") or [] if m.split(" ", 1)[0] in included]
     return {
@@ -164,7 +186,8 @@ async def blast_radius_control(
             "impacted_processes": row["impacted_processes"],
             "compliance_gaps": included,
             "frameworks": grouped,
-            "framework_controls": row["framework_controls"],
+            "framework_controls": _visible_framework_controls(
+                user.graph_tenant_id, control_id, row["framework_controls"] or [], hidden),
             # Requirements in other frameworks (e.g. Kenya DPA) exposed via the
             # curated crosswalk rather than a direct SATISFIES link.
             "mapped_framework_controls": mapped,
@@ -174,6 +197,9 @@ async def blast_radius_control(
             "risk_scores": _risk_scores(user.graph_tenant_id, control_id),
         },
         "regulatory_obligations": _regulatory_obligations(user.graph_tenant_id, row.get("affected_asset_ids") or []),
+        # Sector-specific frameworks this control also maps to, left out
+        # because the organisation hasn't switched them on.
+        "hidden_sector_frameworks": hidden_summary(hidden),
         "summary": {"risk_count": row["risk_count"], "asset_count": row["asset_count"], "framework_count": len(included)}
     }
 

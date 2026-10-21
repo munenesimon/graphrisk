@@ -17,12 +17,12 @@ def test_frameworks_split_into_obligations_and_others(client, fake_graph, as_use
     as_user(graph_tenant_id="acme")
     fake_graph.query.return_value = [
         _framework("KE_DPA_2019", "KENYA_DPA", True, total=27, met=1, attested=2, no_evidence=24, score_sum=3.0),
-        _framework("CBK_CYBER_BANKS_2017", "CBK_CYBER_BANKS", False, total=19, met=1, no_evidence=18, score_sum=1.0),
+        _framework("ISO_27001_2022", "ISO_27001", False, total=93, met=1, no_evidence=92, score_sum=1.0),
     ]
     body = client.get("/api/v1/frameworks/adherence").json()
     assert body["has_profile"] is True
     assert [f["framework"] for f in body["obligations"]] == ["KENYA_DPA"]
-    assert [f["framework"] for f in body["other"]] == ["CBK_CYBER_BANKS"]
+    assert [f["framework"] for f in body["other"]] == ["ISO_27001"]
     dpa = body["obligations"][0]
     assert dpa["evidenced"] == 3 and dpa["no_evidence"] == 24
     assert dpa["adherence_pct"] == round(3 / 27 * 100, 1)

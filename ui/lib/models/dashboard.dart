@@ -115,6 +115,9 @@ class BlastRadius {
   /// How each exposed risk's score is worked out -- see the API's
   /// app/scoring.py. Empty when the API didn't send it.
   final List<RiskScore>       riskScores;
+  /// Sector-specific frameworks this control also maps to, left out
+  /// because the organisation hasn't switched them on (framework names).
+  final List<String>          hiddenSectorFrameworks;
 
   BlastRadius({
     required this.controlTitle,
@@ -133,6 +136,7 @@ class BlastRadius {
     required this.regulatoryObligations,
     this.riskDrivers = const [],
     this.riskScores = const [],
+    this.hiddenSectorFrameworks = const [],
   });
 
   RiskScore? scoreFor(String risk) {
@@ -160,6 +164,11 @@ class BlastRadius {
       frameworkGroups:         FrameworkGroups.fromJson(br['frameworks'] as Map<String, dynamic>?),
       mappedFrameworkControls: List<String>.from(br['mapped_framework_controls'] ?? []),
       regulatoryObligations:   RegulatoryObligations.fromJson(j['regulatory_obligations'] as Map<String, dynamic>?),
+      hiddenSectorFrameworks: (j['hidden_sector_frameworks'] as List? ?? [])
+          .whereType<Map<String, dynamic>>()
+          .map((h) => h['framework']?.toString() ?? '')
+          .where((n) => n.isNotEmpty)
+          .toList(),
       riskDrivers: (br['risk_drivers'] as List? ?? [])
           .whereType<Map<String, dynamic>>()
           .map(RiskDriver.fromJson)

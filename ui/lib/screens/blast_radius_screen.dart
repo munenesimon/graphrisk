@@ -341,6 +341,25 @@ class _BlastRadiusScreenState extends State<BlastRadiusScreen>
               const SizedBox(width: 8),
               _ScopeChip(label: 'Graph', selected: _view == 'graph', onTap: () => setState(() => _view = 'graph')),
             ]),
+          // Sector-specific frameworks left out until switched on -- see
+          // the API's app/sector_frameworks.py.
+          if (_result != null && _result!.hiddenSectorFrameworks.isNotEmpty)
+            InkWell(
+              onTap: widget.onManageProfile,
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.visibility_off_outlined, size: 14, color: Colors.white38),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${_result!.hiddenSectorFrameworks.map(frameworkShortName).join(', ')} hidden: '
+                    'sector-specific, not switched on',
+                    style: const TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
+                ]),
+              ),
+            ),
         ]),
 
         const SizedBox(height: 28),

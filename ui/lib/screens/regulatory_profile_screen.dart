@@ -70,7 +70,7 @@ class _RegulatoryProfileScreenState extends State<RegulatoryProfileScreen> {
       setState(() {
         _profile = updated;
         _saving = false;
-        _saveMessage = 'Saved. Blast Radius and Vulnerability Impact will reflect this immediately.';
+        _saveMessage = 'Saved. Blast Radius, Frameworks and Vulnerability Impact will reflect this immediately.';
       });
     } catch (e) {
       if (!mounted) return;
@@ -79,12 +79,19 @@ class _RegulatoryProfileScreenState extends State<RegulatoryProfileScreen> {
     }
   }
 
+  /// Frameworks that only bind one kind of organisation (a bank, a PSP, a
+  /// card handler...). The API marks them with `sector`; they stay hidden
+  /// across GraphRisk until switched on here -- see sector_frameworks.py.
+  static bool _isSector(dynamic f) => f['sector'] is Map;
+
+  List<dynamic> get _sectorRows => (_allFrameworks ?? []).where(_isSector).toList();
+
   List<dynamic> get _regulationRows => (_allFrameworks ?? [])
-      .where((f) => !kStandardFrameworkNames.contains(f['name']?.toString() ?? ''))
+      .where((f) => !_isSector(f) && !kStandardFrameworkNames.contains(f['name']?.toString() ?? ''))
       .toList();
 
   List<dynamic> get _standardRows => (_allFrameworks ?? [])
-      .where((f) => kStandardFrameworkNames.contains(f['name']?.toString() ?? ''))
+      .where((f) => !_isSector(f) && kStandardFrameworkNames.contains(f['name']?.toString() ?? ''))
       .toList();
 
   @override
@@ -114,9 +121,47 @@ class _RegulatoryProfileScreenState extends State<RegulatoryProfileScreen> {
         if (_error != null) _MessageBanner(message: _error!, color: kRed, icon: Icons.error_outline),
         if (_saveMessage != null) _MessageBanner(message: _saveMessage!, color: kGreen, icon: Icons.check_circle_outline),
 
+        if (_sectorRows.isNotEmpty) ...[
+          _SectionCard(
+            title: 'Your sector',
+            subtitle: 'Off unless they apply to you',
+            color: kOrange,
+            icon: Icons.account_balance_outlined,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Padding(
+                padding: EdgeInsets.only(bottom: 10),
+                child: Text(
+                  'These frameworks only bind certain kinds of organisation, so GraphRisk leaves them '
+                  'out of Blast Radius, the Frameworks page and the dashboard until you switch on the '
+                  'ones that apply to you.',
+                  style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.4),
+                ),
+              ),
+              ..._sectorRows.map((f) {
+                final id = f['id']?.toString() ?? '';
+                final name = f['name']?.toString() ?? '';
+                final sector = (f['sector'] as Map?) ?? const {};
+                final checked = _selectedFrameworkIds.contains(id);
+                return _CheckRow(
+                  toggle: true,
+                  checked: checked,
+                  enabled: _canEdit,
+                  title: sector['applies_to']?.toString() ?? frameworkDisplayName(name),
+                  subtitle: sector['sector']?.toString(),
+                  description: 'Turns on ${frameworkDisplayName(name)}.',
+                  onChanged: (v) => setState(() {
+                    if (v) { _selectedFrameworkIds.add(id); } else { _selectedFrameworkIds.remove(id); }
+                  }),
+                );
+              }),
+            ]),
+          ),
+          const SizedBox(height: 20),
+        ],
+
         _SectionCard(
           title: 'Regulations you may be subject to',
-          subtitle: '${_selectedFrameworkIds.length} selected',
+          subtitle: '${_regulationRows.where((f) => _selectedFrameworkIds.contains(f['id']?.toString() ?? '')).length} selected',
           color: kPurple,
           icon: Icons.gavel_outlined,
           child: _regulationRows.isEmpty
@@ -339,9 +384,12 @@ class _CheckRow extends StatelessWidget {
   final String? subtitle;
   final String description;
   final ValueChanged<bool> onChanged;
+  /// Show an on/off switch instead of a checkbox.
+  final bool toggle;
   const _CheckRow({
     required this.checked, required this.enabled, required this.title,
     this.subtitle, required this.description, required this.onChanged,
+    this.toggle = false,
   });
 
   @override
@@ -358,12 +406,22 @@ class _CheckRow extends StatelessWidget {
           border: Border.all(color: checked ? kAccent.withOpacity(0.35) : kSurface2),
         ),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Checkbox(
-            value: checked,
-            onChanged: enabled ? (v) => onChanged(v ?? false) : null,
-            activeColor: kAccent,
-            side: const BorderSide(color: Colors.white38),
-          ),
+          if (toggle)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Switch(
+                value: checked,
+                onChanged: enabled ? onChanged : null,
+                activeColor: kAccent,
+              ),
+            )
+          else
+            Checkbox(
+              value: checked,
+              onChanged: enabled ? (v) => onChanged(v ?? false) : null,
+              activeColor: kAccent,
+              side: const BorderSide(color: Colors.white38),
+            ),
           const SizedBox(width: 4),
           Expanded(
             child: Padding(
