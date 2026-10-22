@@ -119,6 +119,7 @@ class _FrameworkDetailScreenState extends State<FrameworkDetailScreen> {
     final evidenced = (data['evidenced'] as num?)?.toInt() ?? 0;
     final applicable = (data['applicable'] as num?)?.toInt() ?? 0;
     final applies = data['applies'] == true;
+    final thin = evidenceIsThin(data);
     final notice = kFrameworkNotices[data['framework']?.toString() ?? ''];
     final shown = _filter == null ? reqs : reqs.where((r) => r['status'] == _filter!.key).toList();
 
@@ -142,11 +143,17 @@ class _FrameworkDetailScreenState extends State<FrameworkDetailScreen> {
                   ),
                 ),
                 Text(pct == null ? '—' : '${pct.toStringAsFixed(1)}% met',
-                    style: TextStyle(color: adherenceColor(pct), fontWeight: FontWeight.bold, fontSize: 20)),
+                    style: TextStyle(color: thin ? Colors.white54 : adherenceColor(pct),
+                        fontWeight: FontWeight.bold, fontSize: 20)),
               ]),
               const SizedBox(height: 6),
               Text('Evidence for $evidenced of $applicable requirements · ${adherenceBreakdown(data)}',
                   style: const TextStyle(color: Colors.white70, fontSize: 13)),
+              if (thin && applicable > 0) ...[
+                const SizedBox(height: 2),
+                const Text(kThinEvidenceNote,
+                    style: TextStyle(color: Colors.white38, fontSize: 12, fontStyle: FontStyle.italic)),
+              ],
               const SizedBox(height: 10),
               AdherenceBar(framework: data, height: 10),
               const SizedBox(height: 10),

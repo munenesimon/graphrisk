@@ -358,7 +358,9 @@ def test_detect_protection_reports_running_and_installed_products_separately():
         ["WinRAR 7.11", "Malwarebytes version 4.6", "Reset Tool", "Preset Manager"],
     )
     assert section["status"] == "Active"
-    assert section["product"] == "Microsoft Defender Antivirus, Malwarebytes"
+    # Only what is running is named as the product; the installed one is
+    # still listed under "detected".
+    assert section["product"] == "Microsoft Defender Antivirus"
     assert section["detected"] == [
         "Microsoft Defender Antivirus (Antivirus) — running (msmpeng.exe)",
         "Malwarebytes — installed, not seen running",

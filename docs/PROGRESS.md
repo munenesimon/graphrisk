@@ -1,6 +1,6 @@
-# GraphRisk progress, 12 to 21 October 2026
+# GraphRisk progress, 12 to 22 October 2026
 
-This note covers the work from 12 to 21 October: what changed in GraphRisk, how it was validated against a live Wazuh deployment, and what is planned next.
+This note covers the work from 12 to 22 October: what changed in GraphRisk, how it was validated against a live Wazuh deployment, and what is planned next.
 
 ## What changed
 
@@ -18,6 +18,7 @@ Wazuh's process inventory cannot see Windows protected processes, which is where
 
 - A running service counts as confirmed evidence that the product is running.
 - A stopped service is reported as "installed, service not running" and is not counted as protection.
+- The device's protection summary names only the products that are running. An installed but inactive product is still listed under what was detected, but not as the device's protection.
 - If neither the processes nor the services can be read, the device stays unconfirmed, as before.
 
 ### Inventory cross-check for vulnerability findings
@@ -32,6 +33,20 @@ A vulnerability scanner can keep reporting a finding after the software has been
 
 - Checks now set a graded implementation status instead of pass or fail only: Implemented when the check passes, Partially Implemented when it fails with some effectiveness, and Not Implemented when effectiveness is zero.
 - The dashboard's Controls card shows the average control health, and a new Control Health section lists each control with its health, its source and when it was last tested. Selecting a control opens its blast radius.
+
+### Sector-specific frameworks are off by default
+
+Some frameworks only bind a certain kind of organisation: the CBK guidance for licensed banks and for payment service providers, the CMCA regulations for designated Critical Information Infrastructure operators, and PCI DSS for anyone handling payment card data. GraphRisk now treats every organisation as outside these sectors until it says otherwise.
+
+- The Risk Appetite and Regulations page has a "Your sector" section with one switch per sector, such as "We are a bank licensed by the Central Bank of Kenya".
+- A sector-specific framework that is switched off is left out of blast radius, the crosswalk, the Frameworks page and framework coverage, instead of being shown for reference.
+- Each screen that leaves one out says which, with a link to switch it on.
+- Switching one on also turns on its notification clocks, because the switches use the same regulatory profile.
+- Risk scores and control health don't depend on which frameworks are shown, so nothing is recalculated. A framework that is switched back on returns with its evidence and attestations intact.
+
+### Provisional framework headlines
+
+When most of a framework's applicable requirements have no evidence yet, its headline percentage is now shown greyed out with a note that the figure is provisional. A low score that comes from missing evidence no longer looks the same as one that comes from real gaps.
 
 ### CIS benchmark matched to the Windows edition
 
@@ -65,6 +80,10 @@ Three packages were updated or removed on the test device.
 - The device's recommended actions went from 10 to 7.
 - Unpatched Vulnerability Risk fell from 9.33 to 5.29, against an appetite of 4. Vulnerability and patch management health is now 63%.
 
+### Sector switches
+
+With no sector switched on, a control that maps to the CBK banking guidance showed one framework fewer in its blast radius, with a note that the banking guidance was hidden. The Frameworks page listed the hidden sector frameworks by name and linked to the switches.
+
 ### Edition rule
 
 The configuration score leaves out 7 Enterprise-only or optional-feature settings on the Pro device, and the action text explains why. The latest run shows 293 of 408 applicable checks failing.
@@ -77,10 +96,8 @@ GraphRisk relayed the stale data accurately, because it reports what the source 
 
 ## Next steps
 
-- **Protection products:** list only products whose service is running in the device's protection summary, so an installed but inactive product is not shown alongside the active one.
 - **Risk acceptance:** record accepted risk, with a reason and a review date, for findings that cannot be fixed yet.
 - **Combining rule:** when several checks feed the same control, combine their results instead of letting the latest one overwrite the others.
 - **Attestation lifecycle:** add review dates and expiry to attestations.
 - **Count mismatch:** look into why the configuration card and the action text sometimes disagree by one failed check.
-- **Framework headline:** grey out the headline percentage when most requirements have no evidence yet.
 - **Live validation beyond Wazuh:** run the device profiles against other connectors on live tenants.

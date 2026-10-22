@@ -76,6 +76,17 @@ String adherenceBreakdown(Map<String, dynamic> f) {
   return parts.isEmpty ? 'No requirements' : parts.join(' · ');
 }
 
+/// True when most applicable requirements have no evidence yet. The headline
+/// percentage then says more about what GraphRisk can't see than about how
+/// well the framework is met, so screens show it greyed out.
+bool evidenceIsThin(Map<String, dynamic> f) {
+  final evidencePct = (f['evidence_pct'] as num?)?.toDouble();
+  return evidencePct != null && evidencePct < 50;
+}
+
+const String kThinEvidenceNote =
+    'Most requirements have no evidence yet, so this figure is provisional.';
+
 /// Colour for a percentage, or grey when there's nothing to judge.
 Color adherenceColor(double? pct) {
   if (pct == null) return Colors.white38;

@@ -47,3 +47,17 @@ def test_edr_check_counts_defender_confirmed_by_its_service():
     assert result.score == 1.0
     assert "antivirus/EDR running on 1 of 1 checked (Microsoft Defender Antivirus)" in result.detail
     assert result.discovered_assets[0]["profile"]["protection"]["status"] == "Active"
+
+
+def test_a_stopped_service_is_not_named_as_the_product_beside_a_running_one():
+    section = detect_protection(set(), [], platform="windows",
+                                services={"WinDefend": "RUNNING", "Sense": "STOPPED"})
+    assert section["status"] == "Active"
+    assert section["product"] == "Microsoft Defender Antivirus"
+    assert any("installed, service not running" in d for d in section["detected"])
+
+
+def test_installed_products_are_named_when_nothing_is_running():
+    section = detect_protection(set(), [], platform="windows", services={"Sense": "STOPPED"})
+    assert section["product"] == "Microsoft Defender for Endpoint"
+    assert section["status"] != "Active"

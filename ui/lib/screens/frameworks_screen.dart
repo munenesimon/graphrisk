@@ -184,7 +184,8 @@ class _FrameworkCard extends StatelessWidget {
     final pct = (framework['adherence_pct'] as num?)?.toDouble();
     final evidenced = (framework['evidenced'] as num?)?.toInt() ?? 0;
     final applicable = (framework['applicable'] as num?)?.toInt() ?? 0;
-    final color = emphasised ? adherenceColor(pct) : Colors.white54;
+    final thin = evidenceIsThin(framework);
+    final color = emphasised && !thin ? adherenceColor(pct) : Colors.white54;
 
     final card = Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -211,6 +212,11 @@ class _FrameworkCard extends StatelessWidget {
               : 'Evidence for $evidenced of $applicable requirements · ${adherenceBreakdown(framework)}',
           style: const TextStyle(color: Colors.white54, fontSize: 12),
         ),
+        if (thin && applicable > 0) ...[
+          const SizedBox(height: 2),
+          const Text(kThinEvidenceNote,
+              style: TextStyle(color: Colors.white38, fontSize: 11, fontStyle: FontStyle.italic)),
+        ],
         const SizedBox(height: 10),
         AdherenceBar(framework: framework),
       ]),

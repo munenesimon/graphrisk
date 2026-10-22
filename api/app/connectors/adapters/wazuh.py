@@ -1212,8 +1212,14 @@ def detect_protection(process_names: set[str] | None, package_names: list[str] |
     section: dict = {}
     if status:
         section["status"] = status
-    if running or installed:
-        section["product"] = ", ".join(list(running) + installed)
+    # The product line names what is protecting the device: only running
+    # products when any are, so an installed but inactive one (e.g. Defender
+    # for Endpoint on a device that isn't onboarded) isn't listed beside the
+    # active one. Installed-only products stay listed under "detected".
+    if running:
+        section["product"] = ", ".join(running)
+    elif installed:
+        section["product"] = ", ".join(installed)
     if detected:
         section["detected"] = detected
     if any(product.startswith("Microsoft Defender") for product in list(running) + installed):
