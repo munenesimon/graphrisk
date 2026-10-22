@@ -2,7 +2,10 @@
 Framework adherence: obligations vs other frameworks, "not met" vs "not
 evidenced", and self-declared attestations.
 """
+from datetime import date
+
 from app.graph import queries as app_queries
+from app.api.v1.frameworks import add_months
 
 
 def _framework(fid, name, applies, **counts):
@@ -89,7 +92,9 @@ def test_owner_can_record_an_attestation(client, fake_graph, as_user):
     assert query == app_queries.SET_ATTESTATION
     assert params == {"tenant_id": "acme", "framework_id": "KE_DPA_2019", "requirement_id": "KE_DPA_2019:S41",
                       "status": "in_place", "note": "Data protection policy approved by the board",
-                      "evidence_url": "https://intranet.example.com/policies/dp.pdf", "attested_by": "u-9"}
+                      "evidence_url": "https://intranet.example.com/policies/dp.pdf", "attested_by": "u-9",
+                      "review_by": add_months(date.today(), 12).isoformat()}
+    assert resp.json()["review_by"] == params["review_by"]
 
 
 def test_members_cannot_attest(client, fake_graph, as_user):

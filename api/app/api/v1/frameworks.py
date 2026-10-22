@@ -1,4 +1,5 @@
 import re
+from datetime import date
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends
@@ -31,6 +32,26 @@ def requirement_sort_key(reference: str | None) -> tuple:
 # Who may record (self-declare) that a requirement is in place.
 ATTESTATION_EDITORS = {"owner", "admin"}
 
+# A self-declared "in place" attestation is due for review after this many
+# months unless a date is chosen, and can't be put off longer than
+# MAX_REVIEW_MONTHS. Past its review date it shows as "expired" and stops
+# counting as met (see _ATTESTATION_REVIEW_BY in app/graph/queries.py).
+DEFAULT_REVIEW_MONTHS = 12
+MAX_REVIEW_MONTHS = 36
+
+
+def add_months(d: date, months: int) -> date:
+    """Same day `months` later, or the month's last day if it's shorter
+    (31 Jan + 1 month = 28/29 Feb)."""
+    total = d.month - 1 + months
+    year, month = d.year + total // 12, total % 12 + 1
+    for day in (d.day, 30, 29, 28):
+        try:
+            return date(year, month, day)
+        except ValueError:
+            continue
+    raise ValueError("unreachable")
+
 
 def _summarise(row: dict) -> dict:
     """Counts and percentages for one framework's requirements, keeping
@@ -48,8 +69,9 @@ def _summarise(row: dict) -> dict:
     total = int(row.get("total") or 0)
     na = int(row.get("not_applicable") or 0)
     applicable = max(total - na, 0)
-    counts = {k: int(row.get(k) or 0) for k in ("met", "partial", "gap", "attested", "no_evidence")}
-    evidenced = applicable - counts["no_evidence"]
+    counts = {k: int(row.get(k) or 0) for k in ("met", "partial", "gap", "attested", "no_evidence", "expired")}
+    # An attestation past its review date no longer counts as evidence.
+    evidenced = applicable - counts["no_evidence"] - counts["expired"]
     score = float(row.get("score_sum") or 0.0)
 
     def pct(num: float, den: int) -> float | None:
@@ -118,6 +140,12 @@ class Attestation(BaseModel):
     status: Literal["in_place", "not_applicable"]
     note: Optional[str] = Field(default=None, max_length=2000)
     evidence_url: Optional[str] = Field(default=None, max_length=1000)
+    review_by: Optional[date] = Field(default=None,
+        description=f"When an 'in_place' attestation is due for review. Defaults to "
+                    f"{DEFAULT_REVIEW_MONTHS} months from today; at most {MAX_REVIEW_MONTHS} months ahead. "
+                    f"Ignored for 'not_applicable'.")
+    review_months: Optional[int] = Field(default=None, ge=1, le=MAX_REVIEW_MONTHS,
+        description="Alternative to review_by: review this many months from today.")
 
     @field_validator("evidence_url")
     @classmethod
@@ -132,15 +160,26 @@ async def set_attestation(framework_id: str, body: Attestation, user: CurrentUse
     """Record a requirement as in place (self-declared) or not applicable."""
     if user.role not in ATTESTATION_EDITORS:
         raise HTTPException(status_code=403, detail="Only an organisation owner or admin can record attestations")
+    review_by = None
+    if body.status == "in_place":
+        today = date.today()
+        review_by = body.review_by or add_months(today, body.review_months or DEFAULT_REVIEW_MONTHS)
+        if review_by <= today:
+            raise HTTPException(status_code=400, detail="review_by must be a future date")
+        if review_by > add_months(today, MAX_REVIEW_MONTHS):
+            raise HTTPException(status_code=400,
+                                detail=f"review_by can be at most {MAX_REVIEW_MONTHS} months ahead")
     rows = run_write(queries.SET_ATTESTATION, {
         "tenant_id": user.graph_tenant_id, "framework_id": framework_id,
         "requirement_id": body.requirement_id, "status": body.status,
         "note": (body.note or "").strip() or None, "evidence_url": body.evidence_url,
         "attested_by": user.user_id,
+        "review_by": review_by.isoformat() if review_by else None,
     }) or []
     if not rows:
         raise HTTPException(status_code=404, detail=f"Requirement {body.requirement_id} is not part of {framework_id}")
-    return {"message": "Attestation recorded", "requirement_id": body.requirement_id, "status": body.status}
+    return {"message": "Attestation recorded", "requirement_id": body.requirement_id, "status": body.status,
+            "review_by": review_by.isoformat() if review_by else None}
 
 
 @router.delete("/{framework_id}/attestation")

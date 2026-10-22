@@ -199,6 +199,12 @@ RECORD_CONTROL_PEAK = """
 # A linked control is measured evidence and takes precedence over an
 # attestation (except "not applicable", which removes the requirement).
 # Controls count directly (SATISFIES) or through the crosswalk (MAPS_TO).
+# When a self-declared "in place" attestation is due for review: the date
+# chosen when it was recorded, or 12 months after it was recorded for
+# attestations saved before review dates existed. Past that date it shows as
+# "expired" and stops counting as met until someone reviews and re-saves it.
+_ATTESTATION_REVIEW_BY = "coalesce(a.review_by, date(a.attested_at) + duration({months: 12}))"
+
 _REQUIREMENT_EVIDENCE = """
     OPTIONAL MATCH (d:Control {tenant_id: $tenant_id})-[:SATISFIES]->(fc)
     WITH f, fc, [x IN collect(DISTINCT d) WHERE x IS NOT NULL |
@@ -215,10 +221,11 @@ _REQUIREMENT_EVIDENCE = """
               WHEN size(controls) > 0 AND health >= 0.95 THEN "met"
               WHEN size(controls) > 0 AND health > 0 THEN "partial"
               WHEN size(controls) > 0 THEN "gap"
+              WHEN a.status = "in_place" AND """ + _ATTESTATION_REVIEW_BY + """ < date() THEN "expired"
               WHEN a.status = "in_place" THEN "attested"
               ELSE "no_evidence" END AS status
     WITH f, fc, controls, a, status, health,
-         CASE status WHEN "attested" THEN 1.0 WHEN "no_evidence" THEN 0.0
+         CASE status WHEN "attested" THEN 1.0 WHEN "no_evidence" THEN 0.0 WHEN "expired" THEN 0.0
                      WHEN "not_applicable" THEN 0.0 ELSE health END AS score
 """
 
@@ -232,11 +239,12 @@ FRAMEWORK_ADHERENCE_ALL = """
          sum(CASE status WHEN "gap" THEN 1 ELSE 0 END) AS gap,
          sum(CASE status WHEN "attested" THEN 1 ELSE 0 END) AS attested,
          sum(CASE status WHEN "no_evidence" THEN 1 ELSE 0 END) AS no_evidence,
+         sum(CASE status WHEN "expired" THEN 1 ELSE 0 END) AS expired,
          sum(score) AS score_sum
     OPTIONAL MATCH (o:Organisation {tenant_id: $tenant_id})-[:SUBJECT_TO]->(f)
     RETURN f.id AS framework_id, f.name AS framework, f.version AS version,
            coalesce(f.category, "standard") AS category, o IS NOT NULL AS applies,
-           total, not_applicable, met, partial, gap, attested, no_evidence, score_sum
+           total, not_applicable, met, partial, gap, attested, no_evidence, expired, score_sum
     ORDER BY applies DESC, f.name
 """
 
@@ -250,7 +258,9 @@ FRAMEWORK_REQUIREMENTS = """
            fc.requirement_type AS requirement_type, controls, status, score,
            CASE WHEN a IS NULL THEN null ELSE {status: a.status, note: a.note,
                 evidence_url: a.evidence_url, attested_by: a.attested_by,
-                attested_at: toString(a.attested_at)} END AS attestation
+                attested_at: toString(a.attested_at),
+                review_by: CASE WHEN a.status = "in_place" THEN toString(""" + _ATTESTATION_REVIEW_BY + """)
+                                ELSE null END} END AS attestation
     ORDER BY fc.control_reference
 """
 
@@ -261,7 +271,8 @@ SET_ATTESTATION = """
     MATCH (fc:FrameworkControl {id: $requirement_id})-[:PART_OF]->(:Framework {id: $framework_id})
     MERGE (a:Attestation {tenant_id: $tenant_id, requirement_id: $requirement_id})
     SET a.status = $status, a.note = $note, a.evidence_url = $evidence_url,
-        a.attested_by = $attested_by, a.attested_at = datetime()
+        a.attested_by = $attested_by, a.attested_at = datetime(),
+        a.review_by = CASE WHEN $review_by IS NULL THEN null ELSE date($review_by) END
     MERGE (a)-[:ATTESTS]->(fc)
     RETURN a.status AS status
 """

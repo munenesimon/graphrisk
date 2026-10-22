@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../constants/colors.dart';
 
 /// How a framework requirement stands for this organisation -- see
@@ -18,13 +19,17 @@ class RequirementStatus {
   static const gap = RequirementStatus('gap', 'Gap', 'gaps', kRed, Icons.error_outline);
   static const attested = RequirementStatus(
       'attested', 'Self-declared', 'self-declared', kTeal, Icons.verified_user_outlined);
+  /// A self-declared record past its review date: kept, but no longer
+  /// counted as evidence until someone reviews it and saves it again.
+  static const expired = RequirementStatus(
+      'expired', 'Review overdue', 'review overdue', Color(0xFFDB2777), Icons.event_busy_outlined);
   static const noEvidence = RequirementStatus(
       'no_evidence', 'No evidence yet', 'no evidence yet', Colors.white38, Icons.help_outline);
   static const notApplicable = RequirementStatus(
       'not_applicable', 'Not applicable', 'not applicable', Colors.white24, Icons.remove_circle_outline);
 
   /// Order used in bars, legends and filters.
-  static const all = [met, partial, gap, attested, noEvidence, notApplicable];
+  static const all = [met, partial, gap, attested, expired, noEvidence, notApplicable];
 
   static RequirementStatus of(String? key) =>
       all.firstWhere((s) => s.key == key, orElse: () => noEvidence);
@@ -91,4 +96,20 @@ const String kThinEvidenceNote =
 Color adherenceColor(double? pct) {
   if (pct == null) return Colors.white38;
   return pct >= 80 ? kGreen : pct >= 40 ? kOrange : kRed;
+}
+
+/// "Review by 22 Oct 2027", "Review due in 12 days" or "Review overdue since
+/// 3 Oct 2026" for an attestation's review_by date (yyyy-mm-dd), with the
+/// colour to show it in. Null when there's no date.
+(String, Color)? reviewLabel(String? reviewBy) {
+  final due = reviewBy == null ? null : DateTime.tryParse(reviewBy);
+  if (due == null) return null;
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final days = DateTime(due.year, due.month, due.day).difference(today).inDays;
+  final when = DateFormat('d MMM y').format(due);
+  if (days < 0) return ('Review overdue since $when', RequirementStatus.expired.color);
+  if (days == 0) return ('Review due today', kOrange);
+  if (days <= 30) return ('Review due in $days day${days == 1 ? '' : 's'} ($when)', kOrange);
+  return ('Review by $when', Colors.white54);
 }

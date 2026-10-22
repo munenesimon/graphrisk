@@ -324,12 +324,14 @@ class ApiService {
   // Self-declare a requirement no connector can measure: "in_place" or
   // "not_applicable", with an optional note and evidence link.
   static Future<Map<String, dynamic>> setAttestation(String frameworkId, String requirementId,
-      String status, {String? note, String? evidenceUrl}) {
+      String status, {String? note, String? evidenceUrl, int? reviewMonths}) {
     return _put('/frameworks/${Uri.encodeComponent(frameworkId)}/attestation', {
       'requirement_id': requirementId,
       'status': status,
       if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
       if (evidenceUrl != null && evidenceUrl.trim().isNotEmpty) 'evidence_url': evidenceUrl.trim(),
+      // When an "in place" record is due for review; the server defaults to 12.
+      if (status == 'in_place' && reviewMonths != null) 'review_months': reviewMonths,
     });
   }
 

@@ -72,7 +72,7 @@ class _FrameworkDetailScreenState extends State<FrameworkDetailScreen> {
     if (result == null) return;
     try {
       await ApiService.setAttestation(widget.frameworkId, req['id'].toString(), status,
-          note: result.note, evidenceUrl: result.evidenceUrl);
+          note: result.note, evidenceUrl: result.evidenceUrl, reviewMonths: result.reviewMonths);
       await _load();
     } catch (e) {
       if (e is AuthException || !mounted) return;
@@ -264,6 +264,9 @@ class _RequirementRow extends StatelessWidget {
       return 'Measured: ${parts.join(', ')}';
     }
     if (s == RequirementStatus.attested) return 'Recorded as in place (self-declared)';
+    if (s == RequirementStatus.expired) {
+      return 'Recorded as in place, but past its review date -- not counted until reviewed';
+    }
     if (s == RequirementStatus.notApplicable) return 'Recorded as not applicable';
     return 'No connector measures this, and nothing has been recorded';
   }
@@ -276,6 +279,11 @@ class _RequirementRow extends StatelessWidget {
     final note = att?['note']?.toString();
     final link = att?['evidence_url']?.toString();
     final measured = controls.isNotEmpty;
+    // Only an "in place" record has a review date, and it only matters
+    // while the record is what the status rests on.
+    final review = (s == RequirementStatus.attested || s == RequirementStatus.expired)
+        ? reviewLabel(att?['review_by']?.toString())
+        : null;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -317,15 +325,22 @@ class _RequirementRow extends StatelessWidget {
               const SizedBox(height: 2),
               SelectableText('Evidence: $link', style: const TextStyle(color: kAccent, fontSize: 11)),
             ],
+            if (review != null) ...[
+              const SizedBox(height: 2),
+              Text(review.$1, style: TextStyle(color: review.$2, fontSize: 11, fontWeight: FontWeight.w600)),
+            ],
             if (canAttest) ...[
               const SizedBox(height: 8),
               Wrap(spacing: 8, children: [
                 // A measured requirement is judged by its controls; it can
                 // still be ruled out as not applicable.
-                if (!measured && s != RequirementStatus.attested)
+                if (!measured && s != RequirementStatus.attested && s != RequirementStatus.expired)
                   _ActionButton(label: 'Mark as in place', onTap: () => onAttest('in_place')),
                 if (s == RequirementStatus.attested)
                   _ActionButton(label: 'Edit record', onTap: () => onAttest('in_place')),
+                if (s == RequirementStatus.expired)
+                  _ActionButton(label: 'Review record', onTap: () => onAttest('in_place'),
+                      color: RequirementStatus.expired.color),
                 if (s != RequirementStatus.notApplicable)
                   _ActionButton(label: 'Not applicable', onTap: () => onAttest('not_applicable')),
                 if (att != null)
@@ -378,7 +393,8 @@ class _ActionButton extends StatelessWidget {
 class _AttestationInput {
   final String? note;
   final String? evidenceUrl;
-  const _AttestationInput(this.note, this.evidenceUrl);
+  final int? reviewMonths;
+  const _AttestationInput(this.note, this.evidenceUrl, this.reviewMonths);
 }
 
 class _AttestationDialog extends StatefulWidget {
@@ -396,6 +412,9 @@ class _AttestationDialogState extends State<_AttestationDialog> {
   late final TextEditingController _note = TextEditingController(text: widget.note ?? '');
   late final TextEditingController _link = TextEditingController(text: widget.evidenceUrl ?? '');
   String? _linkError;
+  // Saving an "in place" record counts as reviewing it: the next review is
+  // this many months from today.
+  int _reviewMonths = 12;
 
   @override
   void dispose() { _note.dispose(); _link.dispose(); super.dispose(); }
@@ -406,7 +425,7 @@ class _AttestationDialogState extends State<_AttestationDialog> {
       setState(() => _linkError = 'Use a full link starting with https://');
       return;
     }
-    Navigator.of(context).pop(_AttestationInput(_note.text, link));
+    Navigator.of(context).pop(_AttestationInput(_note.text, link, _reviewMonths));
   }
 
   @override
@@ -454,6 +473,26 @@ class _AttestationDialogState extends State<_AttestationDialog> {
                 labelStyle: const TextStyle(color: Colors.white54),
                 border: const OutlineInputBorder(),
               ),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int>(
+              value: _reviewMonths,
+              dropdownColor: kSurface,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: const InputDecoration(
+                labelText: 'Review again in',
+                labelStyle: TextStyle(color: Colors.white54),
+                border: OutlineInputBorder(),
+                helperText: 'After this date it stops counting as met until reviewed.',
+                helperStyle: TextStyle(color: Colors.white38, fontSize: 11),
+              ),
+              items: const [
+                DropdownMenuItem(value: 6, child: Text('6 months')),
+                DropdownMenuItem(value: 12, child: Text('12 months')),
+                DropdownMenuItem(value: 24, child: Text('24 months')),
+                DropdownMenuItem(value: 36, child: Text('36 months')),
+              ],
+              onChanged: (v) => setState(() => _reviewMonths = v ?? 12),
             ),
           ],
         ]),
