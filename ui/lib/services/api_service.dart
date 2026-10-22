@@ -110,6 +110,25 @@ class ApiService {
     }
   }
 
+  // Login and registration answer 401 for a wrong password; every other
+  // endpoint answers 401 only when the session has expired.
+  static bool _isAuthPath(String path) => path.startsWith('/auth/');
+
+  static Never _sessionExpired() {
+    logout();
+    onSessionExpired?.call();
+    throw AuthException('Session expired. Please log in again.');
+  }
+
+  // Checked before every authenticated request: a token we already know
+  // has expired goes straight to the login screen instead of making a
+  // request the server will refuse (and that a screen might swallow).
+  static void _ensureFresh(String path) {
+    if (_isAuthPath(path)) return;
+    final token = _token;
+    if (token != null && _isExpired(token)) _sessionExpired();
+  }
+
   static Map<String, String> get _authHeaders => {
     'X-API-Key': _apiKey,
     'Content-Type': 'application/json',
@@ -117,16 +136,13 @@ class ApiService {
   };
 
   static Future<Map<String, dynamic>> _get(String path) async {
+    _ensureFresh(path);
     final uri = Uri.parse(_base + path);
     final res = await _client.get(uri, headers: _authHeaders);
     if (res.statusCode == 200) {
       return json.decode(res.body) as Map<String, dynamic>;
     }
-    if (res.statusCode == 401) {
-      logout();
-      onSessionExpired?.call();
-      throw AuthException('Session expired. Please log in again.');
-    }
+    if (res.statusCode == 401) _sessionExpired();
     // Extract the server's `detail` where there is one (e.g. vulnerability-impact's
     // "CVE-... is not in GraphRisk's vulnerability data") instead of a bare status code.
     final detail = _extractDetail(res.body);
@@ -134,11 +150,16 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body) async {
+    _ensureFresh(path);
     final uri = Uri.parse(_base + path);
     final res = await _client.post(uri, headers: _authHeaders, body: json.encode(body));
     if (res.statusCode == 200 || res.statusCode == 201) {
       return json.decode(res.body) as Map<String, dynamic>;
     }
+    // Anything but login/register: a 401 means the session expired, so go
+    // to the login screen like every other request does (running a
+    // connector used to fail silently here).
+    if (res.statusCode == 401 && !_isAuthPath(path)) _sessionExpired();
     if (res.statusCode == 401) {
       final detail = _extractDetail(res.body);
       throw AuthException(detail ?? 'Invalid email or password.');
@@ -148,47 +169,38 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> _put(String path, Map<String, dynamic> body) async {
+    _ensureFresh(path);
     final uri = Uri.parse(_base + path);
     final res = await _client.put(uri, headers: _authHeaders, body: json.encode(body));
     if (res.statusCode == 200 || res.statusCode == 201) {
       return json.decode(res.body) as Map<String, dynamic>;
     }
-    if (res.statusCode == 401) {
-      logout();
-      onSessionExpired?.call();
-      throw AuthException('Session expired. Please log in again.');
-    }
+    if (res.statusCode == 401) _sessionExpired();
     final detail = _extractDetail(res.body);
     throw Exception(detail ?? 'API error ${res.statusCode}: $path');
   }
 
   static Future<Map<String, dynamic>> _patch(String path, Map<String, dynamic> body) async {
+    _ensureFresh(path);
     final uri = Uri.parse(_base + path);
     final res = await _client.patch(uri, headers: _authHeaders, body: json.encode(body));
     if (res.statusCode == 200 || res.statusCode == 201) {
       return json.decode(res.body) as Map<String, dynamic>;
     }
-    if (res.statusCode == 401) {
-      logout();
-      onSessionExpired?.call();
-      throw AuthException('Session expired. Please log in again.');
-    }
+    if (res.statusCode == 401) _sessionExpired();
     final detail = _extractDetail(res.body);
     throw Exception(detail ?? 'API error ${res.statusCode}: $path');
   }
 
   static Future<Map<String, dynamic>> _delete(String path) async {
+    _ensureFresh(path);
     final uri = Uri.parse(_base + path);
     final res = await _client.delete(uri, headers: _authHeaders);
     if (res.statusCode == 200 || res.statusCode == 204) {
       if (res.body.isEmpty) return {};
       return json.decode(res.body) as Map<String, dynamic>;
     }
-    if (res.statusCode == 401) {
-      logout();
-      onSessionExpired?.call();
-      throw AuthException('Session expired. Please log in again.');
-    }
+    if (res.statusCode == 401) _sessionExpired();
     final detail = _extractDetail(res.body);
     throw Exception(detail ?? 'API error ${res.statusCode}: $path');
   }
