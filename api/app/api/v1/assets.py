@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException, Query, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 import uuid
 from app.graph.connection import run_query, run_write
 from app.graph import queries
 from app.auth.jwt_auth import get_current_user, CurrentUser
+from app.risk_acceptance import (DEFAULT_ACCEPTANCE_MONTHS, MAX_ACCEPTANCE_MONTHS,
+                                 package_key, split_accepted)
 
 router = APIRouter()
 
@@ -86,6 +88,16 @@ def _merge_duplicate_packages(packages: list) -> list:
     return list(merged.values())
 
 
+def _risk_acceptances(asset_id: str, tenant_id: str) -> list:
+    """This device's risk acceptances, [] if they can't be read -- the page
+    still loads, just without hiding accepted packages."""
+    try:
+        rows = run_query(queries.GET_RISK_ACCEPTANCES_FOR_ASSET, {"asset_id": asset_id, "tenant_id": tenant_id})
+    except Exception:
+        return []
+    return [r for r in rows or [] if isinstance(r, dict)]
+
+
 def _fix_first(packages: list, vulns_by_id: dict) -> list:
     """Vulnerable software, one entry per package, with the CVEs behind it
     and whether any is known to be used in ransomware -- the "what do I
@@ -147,6 +159,13 @@ async def get_asset_profile(asset_id: str, user: CurrentUser = Depends(get_curre
     vulns = [v for v in (detail.get("vulnerabilities") or []) if v and v.get("cve_id")]
     vulns_by_id = {v["cve_id"]: v for v in vulns}
     packages = (profile.get("software", {}).get("fields", {}) or {}).get("vulnerable_packages", [])
+    # Packages with a risk acceptance in date leave the fix-first list and
+    # the recommended actions straight away; their findings leave the counts
+    # and the score at the next connector run.
+    acceptances = _risk_acceptances(asset_id, tenant_id)
+    active = {package_key(a.get("package_name"), a.get("package_version")): a
+              for a in acceptances if a.get("active")}
+    packages, _ = split_accepted(packages, active)
     vulns.sort(key=lambda v: (
         not _is_known_ransomware(v.get("ransomware_use")),
         -_SEVERITY_RANK.get(v.get("severity"), 0),
@@ -193,6 +212,8 @@ async def get_asset_profile(asset_id: str, user: CurrentUser = Depends(get_curre
             ],
         },
         "risks": risks,
+        "risk_acceptances": acceptances,
+        "can_accept_risk": user.role in ACCEPTANCE_EDITORS and not is_read_only_tenant(tenant_id),
     }
 
 
@@ -245,3 +266,61 @@ async def link_risk(asset_id: str, risk_id: str = Query(), user: CurrentUser = D
     if not result:
         raise HTTPException(status_code=404, detail="Asset or risk not found")
     return {"message": "Risk linked to asset", "data": result[0]}
+
+
+# ── Risk acceptance ──────────────────────────────────────────────────────────
+# See app/risk_acceptance.py. Owners and admins record the decision; it holds
+# the package's findings back from the device's counts, actions and score
+# until its review date.
+
+ACCEPTANCE_EDITORS = {"owner", "admin"}
+
+
+class RiskAcceptanceIn(BaseModel):
+    package_name: str = Field(min_length=1, max_length=300)
+    package_version: str = Field(default="", max_length=100)
+    reason: str = Field(min_length=3, max_length=2000)
+    owner: Optional[str] = Field(default=None, max_length=200,
+        description="Who answers for this decision; defaults to the person recording it.")
+    review_months: int = Field(default=DEFAULT_ACCEPTANCE_MONTHS, ge=1, le=MAX_ACCEPTANCE_MONTHS)
+
+
+@router.get("/{asset_id}/risk-acceptances")
+async def list_risk_acceptances(asset_id: str, user: CurrentUser = Depends(get_current_user)):
+    rows = run_query(queries.GET_RISK_ACCEPTANCES_FOR_ASSET,
+                     {"asset_id": asset_id, "tenant_id": user.graph_tenant_id}) or []
+    return {"acceptances": rows, "can_accept": user.role in ACCEPTANCE_EDITORS}
+
+
+@router.put("/{asset_id}/risk-acceptances")
+async def set_risk_acceptance(asset_id: str, body: RiskAcceptanceIn, user: CurrentUser = Depends(get_current_user)):
+    """Accept the findings in one package on this device until a review date.
+    Saving again (same package and version) renews it from today."""
+    if user.role not in ACCEPTANCE_EDITORS:
+        raise HTTPException(status_code=403, detail="Only an organisation owner or admin can accept a risk")
+    from datetime import date
+    from app.api.v1.frameworks import add_months
+    review_by = add_months(date.today(), body.review_months)
+    rows = run_write(queries.SET_RISK_ACCEPTANCE, {
+        "tenant_id": user.graph_tenant_id, "asset_id": asset_id,
+        "package_name": body.package_name.strip(), "package_version": body.package_version.strip(),
+        "reason": body.reason.strip(), "owner": (body.owner or "").strip() or user.user_id,
+        "accepted_by": user.user_id, "review_by": review_by.isoformat(),
+    }) or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Asset {asset_id} not found")
+    return {"message": "Risk accepted. It drops out of the score at the next connector run.",
+            **rows[0]}
+
+
+@router.delete("/{asset_id}/risk-acceptances")
+async def delete_risk_acceptance(asset_id: str, package_name: str = Query(min_length=1),
+                                 package_version: str = Query(default=""),
+                                 user: CurrentUser = Depends(get_current_user)):
+    if user.role not in ACCEPTANCE_EDITORS:
+        raise HTTPException(status_code=403, detail="Only an organisation owner or admin can revoke a risk acceptance")
+    run_write(queries.DELETE_RISK_ACCEPTANCE, {
+        "tenant_id": user.graph_tenant_id, "asset_id": asset_id,
+        "package_name": package_name, "package_version": package_version,
+    })
+    return {"message": "Risk acceptance revoked. Its findings count again from the next connector run."}

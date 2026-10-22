@@ -48,6 +48,23 @@ Some frameworks only bind a certain kind of organisation: the CBK guidance for l
 
 When most of a framework's applicable requirements have no evidence yet, its headline percentage is now shown greyed out with a note that the figure is provisional. A low score that comes from missing evidence no longer looks the same as one that comes from real gaps.
 
+### Review dates for self-declared evidence
+
+A requirement recorded as "in place" by hand (a policy, a plan, training) now has a review date, 12 months ahead by default and at most 36. The requirement shows when its review is due, and from 30 days before it the date is highlighted. Once the date passes, the record is shown as "Review overdue" and stops counting as evidence or as met until someone reviews it and saves it again. Records saved before review dates existed are due 12 months after they were saved. Records marking a requirement as not applicable do not expire.
+
+### Risk acceptance
+
+When a vulnerable package can't be fixed yet, an owner or admin can accept the risk for that package on that device, with a reason, an owner and a review date of 3, 6 or 12 months.
+
+- The package leaves the device's recommended actions and fix-first list straight away.
+- At the next connector run its findings leave the device's counts, the patching score and the risk score, and the device page lists them as accepted.
+- When the review date passes, the findings count again and the acceptance is flagged for review. It can be renewed with a fresh date, or revoked at any time.
+- An acceptance applies to one version of one package. Installing a different version starts a new decision.
+
+### Combining results from several connectors
+
+Several connectors can measure the same control: MFA from more than one identity provider, patching from more than one scanner. GraphRisk now keeps each connector's latest result for a control and sets the control's health from the weakest of them, so a weak tenant or device can't be hidden by a strong one. The control shows which connector gave the weakest result and how many contributed. A connector's last result keeps counting until it runs again.
+
 ### CIS benchmark matched to the Windows edition
 
 The CIS benchmark that Wazuh ships is written for Windows 10 Enterprise. On Pro and Home devices, settings for Enterprise and Education features (Credential Guard, Device Guard, AppLocker, Windows tips, Microsoft consumer experiences) are no longer counted. Optional features such as Application Guard are not counted on any edition.
@@ -96,8 +113,6 @@ GraphRisk relayed the stale data accurately, because it reports what the source 
 
 ## Next steps
 
-- **Risk acceptance:** record accepted risk, with a reason and a review date, for findings that cannot be fixed yet.
-- **Combining rule:** when several checks feed the same control, combine their results instead of letting the latest one overwrite the others.
-- **Attestation lifecycle:** add review dates and expiry to attestations.
 - **Count mismatch:** look into why the configuration card and the action text sometimes disagree by one failed check.
+- **Risk acceptance for other scanners:** hold accepted packages back in Qualys and CrowdStrike results the same way Wazuh does.
 - **Live validation beyond Wazuh:** run the device profiles against other connectors on live tenants.

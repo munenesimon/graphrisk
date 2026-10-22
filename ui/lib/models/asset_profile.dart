@@ -24,6 +24,12 @@ class AssetProfile {
   final List<Map<String, dynamic>> recommendations;
   /// The organisation's risk appetite the verdicts were judged against.
   final double riskAppetite;
+  /// Packages on this device whose findings are accepted until a review
+  /// date (see the API's app/risk_acceptance.py). Each: package_name,
+  /// package_version, reason, owner, review_by, active.
+  final List<Map<String, dynamic>> riskAcceptances;
+  /// Whether this user can accept or revoke a risk here (owner/admin).
+  final bool canAcceptRisk;
 
   AssetProfile({
     required this.asset,
@@ -39,6 +45,8 @@ class AssetProfile {
     this.possibleDuplicates = const [],
     this.recommendations = const [],
     this.riskAppetite = 4,
+    this.riskAcceptances = const [],
+    this.canAcceptRisk = false,
   });
 
   factory AssetProfile.fromJson(Map<String, dynamic> j) {
@@ -70,6 +78,11 @@ class AssetProfile {
           .map((e) => e.cast<String, dynamic>())
           .toList(),
       riskAppetite: (j['risk_appetite'] as num?)?.toDouble() ?? 4,
+      riskAcceptances: ((j['risk_acceptances'] as List?) ?? [])
+          .whereType<Map>()
+          .map((e) => e.cast<String, dynamic>())
+          .toList(),
+      canAcceptRisk: j['can_accept_risk'] == true,
     );
   }
 }

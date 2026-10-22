@@ -120,6 +120,11 @@ class BaseConnector(ABC):
     """
 
     CONNECTOR_ID:   str = "base"    # Override in subclass, e.g. "entra_id"
+
+    # Risk acceptances in date, by lower-cased device name -- set by the
+    # registry before a run (see app/risk_acceptance.py). Scanners that
+    # report per-device findings hold these packages' findings back.
+    accepted_packages: dict = {}
     CONNECTOR_NAME: str = "Base"    # Override in subclass, e.g. "Microsoft Entra ID"
 
     # Config keys this connector requires -- override in subclass so

@@ -66,6 +66,7 @@ class CheckRegistry:
             raise ValueError(f"No adapter registered for check: {check_id}")
         adapter_class = self._adapters[connector_id]
         adapter = adapter_class(tenant_id=tenant_id, config=config)
+        self._attach_acceptances(adapter, tenant_id)
 
         config_error = adapter.validate_config()
         if config_error:
@@ -88,6 +89,7 @@ class CheckRegistry:
         if not adapter_class:
             raise ValueError(f"Unknown connector: {connector_id}")
         adapter = adapter_class(tenant_id=tenant_id, config=config)
+        self._attach_acceptances(adapter, tenant_id)
         results, errors = adapter.run_all_checks()
         for result in results:
             self._write_to_graph(result)
@@ -98,6 +100,15 @@ class CheckRegistry:
     # seen so far: the baseline is at least this much per device (about two
     # critical findings' worth).
     PROGRESS_FLOOR_PER_DEVICE = PROGRESS_FLOOR_PER_DEVICE
+
+    @staticmethod
+    def _attach_acceptances(adapter, tenant_id: str) -> None:
+        """Give the adapter this tenant's risk acceptances that are still in
+        date (see app/risk_acceptance.py), so a scanner can hold accepted
+        packages' findings back from the counts and the score. Adapters that
+        report findings read `accepted_packages`; others ignore it."""
+        from app.risk_acceptance import load_active
+        adapter.accepted_packages = load_active(tenant_id)
 
     def _apply_progress(self, result: CheckResult) -> None:
         """

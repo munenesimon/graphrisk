@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../constants/colors.dart';
 import '../models/asset_profile.dart';
@@ -51,6 +52,39 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
   }
 
   static const _titleStyle = TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700);
+
+  /// Record (or renew) a risk acceptance for one package on this device.
+  Future<void> _acceptRisk(String name, String version, {String? reason, String? owner}) async {
+    final input = await showDialog<_AcceptRiskInput>(
+      context: context,
+      builder: (_) => _AcceptRiskDialog(package: _packageTitle(name, version), reason: reason, owner: owner),
+    );
+    if (input == null) return;
+    try {
+      await ApiService.acceptRisk(widget.assetId, name, version,
+          reason: input.reason, owner: input.owner, reviewMonths: input.months);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+          'Risk accepted. It leaves the actions now and the score at the next connector run.')));
+      await _load();
+    } catch (e) {
+      if (e is AuthException || !mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+    }
+  }
+
+  Future<void> _revokeRisk(String name, String version) async {
+    try {
+      await ApiService.revokeRiskAcceptance(widget.assetId, name, version);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
+          'Acceptance revoked. Its findings count again from the next connector run.')));
+      await _load();
+    } catch (e) {
+      if (e is AuthException || !mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -219,7 +253,33 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
         subtitle: 'Vulnerable software on this device, most urgent first',
         icon: Icons.build_circle_outlined,
         color: kRed,
-        child: Column(children: [for (final pkg in p.fixFirst) _PackageRow(pkg: pkg)]),
+        child: Column(children: [
+          for (final pkg in p.fixFirst)
+            _PackageRow(
+              pkg: pkg,
+              onAccept: p.canAcceptRisk ? () => _acceptRisk(pkg.name, pkg.version ?? '') : null,
+            ),
+        ]),
+      ));
+    }
+
+    // ── Accepted risks ──
+    if (p.riskAcceptances.isNotEmpty) {
+      widgets.add(_Card(
+        title: 'Accepted risks',
+        subtitle: 'Findings you have decided to live with until a review date; not counted until then',
+        icon: Icons.assignment_turned_in_outlined,
+        color: kOrange,
+        child: Column(children: [
+          for (final a in p.riskAcceptances)
+            _AcceptanceRow(
+              acceptance: a,
+              canEdit: p.canAcceptRisk,
+              onRenew: () => _acceptRisk(a['package_name']?.toString() ?? '', a['package_version']?.toString() ?? '',
+                  reason: a['reason']?.toString(), owner: a['owner']?.toString()),
+              onRevoke: () => _revokeRisk(a['package_name']?.toString() ?? '', a['package_version']?.toString() ?? ''),
+            ),
+        ]),
       ));
     }
 
@@ -338,7 +398,9 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
       final label = section == 'extra' ? field : _label('$section.$field');
       // One item per line: each is a sentence of its own (a product and how
       // it was detected, or a setting to change).
-      if ((section == 'protection' || (section == 'software' && field == 'awaiting_rescan')) && value is List) {
+      if ((section == 'protection' ||
+              (section == 'software' && (field == 'awaiting_rescan' || field == 'accepted_risk'))) &&
+          value is List) {
         rows.add(_FieldRow(label: label, value: value.map((e) => e.toString()).join('\n')));
         continue;
       }
@@ -418,9 +480,11 @@ const _fieldLabels = <String, String>{
   'software.hotfixes_count': 'Updates installed',
   'software.recent_hotfixes': 'Recent updates',
   'software.awaiting_rescan': 'Fixed on the device, awaiting rescan',
+  'software.accepted_risk': 'Accepted risk (not counted)',
   'vulnerabilities.counts_by_severity': 'Findings by severity',
   'vulnerabilities.total': 'Total findings',
   'vulnerabilities.awaiting_rescan': 'Awaiting rescan (not counted)',
+  'vulnerabilities.accepted_risk': 'Accepted risk (not counted)',
   'vulnerabilities.scanner': 'Scanner',
   'protection.status': 'Status',
   'protection.product': 'Product',
@@ -638,15 +702,13 @@ class _StatusBadge extends StatelessWidget {
 
 class _PackageRow extends StatelessWidget {
   final VulnerablePackage pkg;
-  const _PackageRow({required this.pkg});
+  /// Set when this user can accept the package's findings as a risk.
+  final VoidCallback? onAccept;
+  const _PackageRow({required this.pkg, this.onAccept});
 
   @override
   Widget build(BuildContext context) {
-    final version = pkg.version ?? '';
-    // Windows names often already carry the version ("Wireshark 4.4.5 x64").
-    final inName = version.isNotEmpty &&
-        RegExp('(?<![\\w.])${RegExp.escape(version)}(?![\\w.])').hasMatch(pkg.name);
-    final title = (version.isEmpty || inName) ? pkg.name : '${pkg.name} $version';
+    final title = _packageTitle(pkg.name, pkg.version ?? '');
     final Color accent = pkg.ransomware ? kRed : Colors.white24;
     return Container(
       width: double.infinity,
@@ -674,6 +736,16 @@ class _PackageRow extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         for (final c in pkg.cves) _CveRow(cve: c),
+        if (onAccept != null)
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: onAccept,
+              icon: const Icon(Icons.assignment_turned_in_outlined, size: 16),
+              label: const Text("Can't fix yet? Accept risk"),
+              style: TextButton.styleFrom(foregroundColor: kOrange, textStyle: const TextStyle(fontSize: 12)),
+            ),
+          ),
       ]),
     );
   }
@@ -1029,6 +1101,177 @@ class _VerdictPill extends StatelessWidget {
         border: Border.all(color: c.withOpacity(0.4)),
       ),
       child: Text(label, style: TextStyle(color: c, fontSize: 10, fontWeight: FontWeight.w600)),
+    );
+  }
+}
+
+/// "Wireshark 4.4.5 x64" rather than "Wireshark 4.4.5 x64 4.4.5": Windows
+/// names often already carry the version.
+String _packageTitle(String name, String version) {
+  final inName = version.isNotEmpty &&
+      RegExp('(?<![\\w.])${RegExp.escape(version)}(?![\\w.])').hasMatch(name);
+  return (version.isEmpty || inName) ? name : '$name $version';
+}
+
+String _fmtDate(String? iso) {
+  final d = iso == null ? null : DateTime.tryParse(iso);
+  return d == null ? (iso ?? '') : DateFormat('d MMM y').format(d);
+}
+
+class _AcceptanceRow extends StatelessWidget {
+  final Map<String, dynamic> acceptance;
+  final bool canEdit;
+  final VoidCallback onRenew;
+  final VoidCallback onRevoke;
+  const _AcceptanceRow({required this.acceptance, required this.canEdit,
+      required this.onRenew, required this.onRevoke});
+
+  @override
+  Widget build(BuildContext context) {
+    final a = acceptance;
+    final active = a['active'] == true;
+    final when = _fmtDate(a['review_by']?.toString());
+    final owner = a['owner']?.toString() ?? '';
+    final color = active ? kOrange : kRed;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: kSurface2.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withOpacity(0.35)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(
+            child: Text(_packageTitle(a['package_name']?.toString() ?? '', a['package_version']?.toString() ?? ''),
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
+          ),
+          _Chip(text: active ? 'Accepted until $when' : 'Review overdue since $when', color: color),
+        ]),
+        const SizedBox(height: 4),
+        if (!active)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 4),
+            child: Text('Past its review date, so its findings count again. Renew it or fix the package.',
+                style: TextStyle(color: kRed, fontSize: 12)),
+          ),
+        Text('Reason: ${a['reason'] ?? ''}', style: const TextStyle(color: Colors.white60, fontSize: 12)),
+        if (owner.isNotEmpty)
+          Text('Owner: $owner', style: const TextStyle(color: Colors.white38, fontSize: 11)),
+        if (canEdit)
+          Wrap(spacing: 8, children: [
+            TextButton(onPressed: onRenew, child: Text(active ? 'Edit or renew' : 'Renew')),
+            TextButton(
+              onPressed: onRevoke,
+              style: TextButton.styleFrom(foregroundColor: kRed),
+              child: const Text('Revoke'),
+            ),
+          ]),
+      ]),
+    );
+  }
+}
+
+class _AcceptRiskInput {
+  final String reason;
+  final String? owner;
+  final int months;
+  const _AcceptRiskInput(this.reason, this.owner, this.months);
+}
+
+class _AcceptRiskDialog extends StatefulWidget {
+  final String package;
+  final String? reason;
+  final String? owner;
+  const _AcceptRiskDialog({required this.package, this.reason, this.owner});
+
+  @override
+  State<_AcceptRiskDialog> createState() => _AcceptRiskDialogState();
+}
+
+class _AcceptRiskDialogState extends State<_AcceptRiskDialog> {
+  late final TextEditingController _reason = TextEditingController(text: widget.reason ?? '');
+  late final TextEditingController _owner = TextEditingController(text: widget.owner ?? '');
+  int _months = 6;
+  String? _reasonError;
+
+  @override
+  void dispose() { _reason.dispose(); _owner.dispose(); super.dispose(); }
+
+  void _save() {
+    final reason = _reason.text.trim();
+    if (reason.length < 3) {
+      setState(() => _reasonError = 'Say why this risk is accepted');
+      return;
+    }
+    Navigator.of(context).pop(_AcceptRiskInput(reason, _owner.text.trim(), _months));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: kSurface,
+      title: const Text('Accept this risk', style: TextStyle(color: Colors.white, fontSize: 17)),
+      content: SizedBox(
+        width: 460,
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(widget.package, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          const SizedBox(height: 10),
+          const Text(
+            'Its findings leave this device\'s actions now and its counts and risk score at the next '
+            'connector run, until the review date. After that they count again.',
+            style: TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _reason,
+            maxLines: 3,
+            maxLength: 2000,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            decoration: InputDecoration(
+              labelText: 'Why it is accepted',
+              hintText: 'e.g. needed for the Wazuh VM; upgrade planned after the next release',
+              errorText: _reasonError,
+              labelStyle: const TextStyle(color: Colors.white54),
+              border: const OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _owner,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            decoration: const InputDecoration(
+              labelText: 'Owner (optional)',
+              hintText: 'Who answers for this decision; defaults to you',
+              labelStyle: TextStyle(color: Colors.white54),
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<int>(
+            value: _months,
+            dropdownColor: kSurface,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            decoration: const InputDecoration(
+              labelText: 'Review in',
+              labelStyle: TextStyle(color: Colors.white54),
+              border: OutlineInputBorder(),
+            ),
+            items: const [
+              DropdownMenuItem(value: 3, child: Text('3 months')),
+              DropdownMenuItem(value: 6, child: Text('6 months')),
+              DropdownMenuItem(value: 12, child: Text('12 months')),
+            ],
+            onChanged: (v) => setState(() => _months = v ?? 6),
+          ),
+        ]),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        FilledButton(onPressed: _save, child: const Text('Accept risk')),
+      ],
     );
   }
 }

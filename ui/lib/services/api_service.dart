@@ -350,6 +350,25 @@ class ApiService {
   // Everything the asset page shows: the merged device profile from every
   // connector reporting on this asset, what to patch first, linked
   // vulnerabilities and risks.
+  // Accept the findings in one package on a device until a review date
+  // (1-12 months); see the API's app/risk_acceptance.py.
+  static Future<Map<String, dynamic>> acceptRisk(String assetId, String packageName, String packageVersion,
+      {required String reason, String? owner, int reviewMonths = 6}) {
+    return _put('/assets/${Uri.encodeComponent(assetId)}/risk-acceptances', {
+      'package_name': packageName,
+      'package_version': packageVersion,
+      'reason': reason.trim(),
+      if (owner != null && owner.trim().isNotEmpty) 'owner': owner.trim(),
+      'review_months': reviewMonths,
+    });
+  }
+
+  static Future<void> revokeRiskAcceptance(String assetId, String packageName, String packageVersion) async {
+    await _delete('/assets/${Uri.encodeComponent(assetId)}/risk-acceptances'
+        '?package_name=${Uri.encodeQueryComponent(packageName)}'
+        '&package_version=${Uri.encodeQueryComponent(packageVersion)}');
+  }
+
   static Future<AssetProfile> getAssetProfile(String assetId) async {
     final data = await _get('/assets/$assetId/profile');
     return AssetProfile.fromJson(data);

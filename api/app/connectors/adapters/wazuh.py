@@ -63,6 +63,7 @@ from ..checks import (no_data_result, PROGRESS_FLOOR_PER_DEVICE, SEVERITY_WEIGHT
                       open_weight as shared_open_weight, progress)
 from ..models import CheckResult, CheckStatus, CheckCategory
 from ..profile import group_vulnerable_packages, package_label
+from app.risk_acceptance import package_key
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,15 @@ def stale_packages(finding_packages: set[tuple[str, str]],
 
 def _pkg_key(name, version) -> tuple[str, str]:
     return (str(name or "").strip(), str(version or "").strip())
+
+
+def _review_date_label(review_by) -> str:
+    """"2027-04-22" -> "22 Apr 2027"; the raw value if it isn't a date."""
+    from datetime import date
+    try:
+        return date.fromisoformat(str(review_by)[:10]).strftime("%d %b %Y").lstrip("0")
+    except ValueError:
+        return str(review_by or "")
 
 # CIS benchmark checks for optional Windows features that only apply where
 # the feature is turned on. Microsoft Defender Application Guard is optional
@@ -482,6 +492,21 @@ class WazuhAdapter(BaseConnector):
                     (held if pkg and _pkg_key(pkg["name"], pkg.get("version")) in stale else keep).append(e)
                 by_agent[agent_id] = keep
                 self._stale_findings[agent_id] = held
+        # Hold back findings in packages with a risk acceptance in date (see
+        # app/risk_acceptance.py): not ingested, so they leave the device's
+        # findings and the score until the acceptance's review date.
+        self._accepted_findings = {}
+        for agent_id, entries in list(by_agent.items()):
+            accepted = self._accepted_for(agent_id)
+            if not accepted:
+                continue
+            keep, held = [], []
+            for e in entries:
+                pkg = e.get("package")
+                (held if pkg and package_key(pkg["name"], pkg.get("version")) in accepted else keep).append(e)
+            if held:
+                by_agent[agent_id] = keep
+                self._accepted_findings[agent_id] = held
         hits = resp.get("hits") or {}
         total = hits.get("total")
         total = total.get("value") if isinstance(total, dict) else total
@@ -519,6 +544,7 @@ class WazuhAdapter(BaseConnector):
         out: dict[str, dict[str, int]] = {}
         self._stale_counts = {}
         self._stale_summary = {}
+        self._accepted_summary = {}
         buckets = (((resp.get("aggregations") or {}).get("by_agent") or {}).get("buckets")) or []
         for b in buckets:
             if not b.get("key"):
@@ -542,6 +568,19 @@ class WazuhAdapter(BaseConnector):
                 self._stale_counts[agent_id] = held
                 self._stale_summary[agent_id] = sorted(
                     ({"name": k[0], "version": k[1], "findings": sum(per_pkg[k].values())} for k in stale),
+                    key=lambda x: -x["findings"])
+            # Packages with a risk acceptance in date leave the counts too.
+            accepted = self._accepted_for(agent_id)
+            acc_keys = [k for k in per_pkg if k not in stale and package_key(*k) in accepted] if accepted else []
+            if acc_keys:
+                held_acc: dict[str, int] = {}
+                for key in acc_keys:
+                    for s, n in per_pkg[key].items():
+                        held_acc[s] = held_acc.get(s, 0) + n
+                sev = {s: max(n - held_acc.get(s, 0), 0) for s, n in sev.items()}
+                self._accepted_summary[agent_id] = sorted(
+                    ({"name": k[0], "version": k[1], "findings": sum(per_pkg[k].values()),
+                      "review_by": accepted[package_key(*k)].get("review_by")} for k in acc_keys),
                     key=lambda x: -x["findings"])
             out[agent_id] = sev
         return out
@@ -573,6 +612,19 @@ class WazuhAdapter(BaseConnector):
             if agent_id and svc.get("id"):
                 out.setdefault(str(agent_id), {})[str(svc["id"])] = str(svc.get("state") or "")
         return out
+
+    def _remember_agent_names(self, agents: list[dict]) -> None:
+        """agent id -> lower-cased name, for matching risk acceptances
+        (recorded against the asset, which carries the agent's name)."""
+        names = self.__dict__.setdefault("_agent_names", {})
+        for a in agents or []:
+            if a.get("id") and a.get("name"):
+                names[str(a["id"])] = str(a["name"]).strip().lower()
+
+    def _accepted_for(self, agent_id: str) -> dict:
+        """This agent's risk acceptances in date, keyed by package_key."""
+        name = (self.__dict__.get("_agent_names") or {}).get(str(agent_id))
+        return (self.accepted_packages or {}).get(name, {}) if name else {}
 
     def _remember_installed(self, agent_id: str, packages: dict) -> None:
         """Cache an agent's installed (name, version) pairs from a
@@ -746,6 +798,13 @@ class WazuhAdapter(BaseConnector):
                 f"{package_label(h['name'], h['version'])}: {h['findings']} finding{'s' if h['findings'] != 1 else ''}"
                 for h in held]
             profile.setdefault("vulnerabilities", {})["awaiting_rescan"] = sum(h["findings"] for h in held)
+        accepted = (getattr(self, "_accepted_summary", None) or {}).get(agent.get("id"))
+        if accepted:
+            profile.setdefault("software", {})["accepted_risk"] = [
+                f"{package_label(h['name'], h['version'])}: {h['findings']} finding{'s' if h['findings'] != 1 else ''}, "
+                f"accepted until {_review_date_label(h.get('review_by'))}"
+                for h in accepted]
+            profile.setdefault("vulnerabilities", {})["accepted_risk"] = sum(h["findings"] for h in accepted)
         return profile
 
     def _failed_sca_checks(self, agent_id: str, policy_id: str | None, os_name: str | None = None) -> list[dict]:
@@ -871,6 +930,7 @@ class WazuhAdapter(BaseConnector):
         vulns_by_agent: dict[str, list[dict]] = {}
         severity_counts: dict[str, dict[str, int]] = {}
         vulns_complete = False
+        self._remember_agent_names(agents)
         if self._effective_indexer_url():
             try:
                 severity_counts = self._fetch_severity_counts([a.get("id") for a in agents])
@@ -978,6 +1038,7 @@ class WazuhAdapter(BaseConnector):
             raise RuntimeError("Vulnerability patching needs the Wazuh indexer configured")
         data = self._wazuh_get("/agents", params={"limit": 500, "status": "active"})
         agents = [a for a in data.get("data", {}).get("affected_items", []) if a.get("id") != "000"]
+        self._remember_agent_names(agents)
         counts = self._fetch_severity_counts([a.get("id") for a in agents]) if agents else {}
         scanned = [a for a in agents if a.get("id") in counts]
         if not scanned:
@@ -1015,7 +1076,7 @@ class WazuhAdapter(BaseConnector):
             total_count=total,
             detail=(f"{by_sev['Critical']} critical, {by_sev['High']} high, {by_sev['Medium']} medium and "
                     f"{by_sev['Low']} low findings open across {total} scanned device{'s' if total != 1 else ''}; "
-                    f"{clean} with no Critical or High" + self._awaiting_rescan_note()),
+                    f"{clean} with no Critical or High" + self._awaiting_rescan_note() + self._accepted_note()),
             control_title=self._control_title("wazuh_vulnerability_patching"),
             raw_data={"progress": progress(open_weight, total)},
         )
@@ -1030,6 +1091,17 @@ class WazuhAdapter(BaseConnector):
         return (f" ({findings} finding{'s' if findings != 1 else ''} in {packages} package"
                 f"{'s' if packages != 1 else ''} the device no longer reports are awaiting rescan "
                 "and not counted)")
+
+    def _accepted_note(self) -> str:
+        """Run-detail suffix for findings left out under a risk acceptance."""
+        summary = getattr(self, "_accepted_summary", None) or {}
+        findings = sum(h["findings"] for held in summary.values() for h in held)
+        if not findings:
+            return ""
+        packages = sum(len(held) for held in summary.values())
+        return (f" ({findings} finding{'s' if findings != 1 else ''} in {packages} accepted package"
+                f"{'s' if packages != 1 else ''} not counted until their review date"
+                f"{'s' if packages != 1 else ''})")
 
     def _check_sca_compliance(self) -> CheckResult:
         """

@@ -351,21 +351,44 @@ DASHBOARD_CONTROLS_DETAIL = """
 """
 
 
-# Overrides graphrisk-core's WRITE_CHECK_RESULT: the control status now
-# comes from implementation_status_for() in connectors/registry.py (graded
-# by health, so a failing check on a control that partly works reads
-# "PartiallyImplemented", not "NotImplemented"). A null status leaves the
-# control's status as it was. Move into graphrisk-core when convenient.
+# Overrides graphrisk-core's WRITE_CHECK_RESULT.
+#
+# Combining rule: several connectors can measure the same control (MFA from
+# Entra and Okta, patching from Wazuh and Qualys). Each one's latest result is
+# kept as a CheckMeasurement per (control, source, check), and the control
+# takes the WEAKEST of them -- a weak tenant or device can't be hidden by a
+# strong one. A source's last result keeps counting until it runs again.
+#
+# The control status comes from implementation_status_for() in
+# connectors/registry.py (graded by health, so a failing check on a control
+# that partly works reads "PartiallyImplemented", not "NotImplemented"). A
+# null status leaves the control's status as it was. Move into
+# graphrisk-core when convenient.
 import graphrisk_core.queries as _core_queries  # noqa: E402
 _RECOMPUTE_RISK = getattr(_core_queries, "_RECOMPUTE_RISK", "")
 
 WRITE_CHECK_RESULT = """
     MATCH (c:Control {title: $control_title, tenant_id: $tenant_id})
-    SET c.implementation_status = coalesce($implementation_status, c.implementation_status),
-        c.effectiveness_score = $score,
+    MERGE (m:CheckMeasurement {tenant_id: $tenant_id, control_title: $control_title,
+                               source: $source, check_id: $check_id})
+    SET m.score = $score, m.status = $implementation_status, m.detail = $detail,
+        m.check_name = $check_name, m.tested_at = datetime()
+    MERGE (c)-[:MEASURED_BY]->(m)
+    WITH c
+    MATCH (c)-[:MEASURED_BY]->(meas:CheckMeasurement)
+    WITH c, meas ORDER BY meas.score ASC, meas.tested_at DESC
+    WITH c, collect(meas) AS measurements
+    WITH c, measurements[0] AS weakest, [x IN measurements | x.source] AS sources
+    SET c.implementation_status = coalesce(weakest.status, c.implementation_status),
+        c.effectiveness_score = weakest.score,
         c.last_tested_at      = datetime(),
-        c.last_check_source   = $source,
-        c.last_check_detail   = $detail
+        c.last_check_source   = weakest.source,
+        c.last_check_detail   = CASE WHEN size(sources) > 1
+                                     THEN coalesce(weakest.detail, "") + " (weakest of " + toString(size(sources)) +
+                                          " sources: " + reduce(acc = "", x IN sources |
+                                              acc + CASE WHEN acc = "" THEN "" ELSE ", " END + x) + ")"
+                                     ELSE weakest.detail END,
+        c.measured_by_count   = size(sources)
     WITH c
     CALL {
         WITH c
@@ -384,4 +407,47 @@ WRITE_CHECK_RESULT = """
 BLAST_RADIUS_DIRECT_REFS = """
     MATCH (c:Control {id: $control_id, tenant_id: $tenant_id})-[:SATISFIES]->(fc:FrameworkControl)-[:PART_OF]->(f:Framework)
     RETURN DISTINCT f.name AS framework, fc.control_reference AS reference
+"""
+
+
+# ── Risk acceptance ──────────────────────────────────────────────────────────
+# A decision to live with the findings in one package on one device until a
+# review date, with a reason and an owner (see app/risk_acceptance.py). Keyed
+# on (tenant, asset, package name, package version): a new version is a new
+# decision. Until review_by, connectors leave the package's findings out of
+# the device's counts and the score; after it they count again.
+SET_RISK_ACCEPTANCE = """
+    MATCH (a:Asset {id: $asset_id, tenant_id: $tenant_id})
+    MERGE (x:RiskAcceptance {tenant_id: $tenant_id, asset_id: $asset_id,
+                             package_name: $package_name, package_version: $package_version})
+    SET x.reason = $reason, x.owner = $owner, x.accepted_by = $accepted_by,
+        x.accepted_at = datetime(), x.review_by = date($review_by)
+    MERGE (x)-[:ACCEPTS_RISK_ON]->(a)
+    RETURN x.package_name AS package_name, x.package_version AS package_version,
+           toString(x.review_by) AS review_by
+"""
+
+DELETE_RISK_ACCEPTANCE = """
+    MATCH (x:RiskAcceptance {tenant_id: $tenant_id, asset_id: $asset_id,
+                             package_name: $package_name, package_version: $package_version})
+    DETACH DELETE x
+    RETURN count(*) AS deleted
+"""
+
+GET_RISK_ACCEPTANCES_FOR_ASSET = """
+    MATCH (x:RiskAcceptance {tenant_id: $tenant_id, asset_id: $asset_id})
+    RETURN x.package_name AS package_name, x.package_version AS package_version,
+           x.reason AS reason, x.owner AS owner, x.accepted_by AS accepted_by,
+           toString(x.accepted_at) AS accepted_at, toString(x.review_by) AS review_by,
+           x.review_by >= date() AS active
+    ORDER BY x.review_by
+"""
+
+# Every acceptance still within its review date, with the device's name --
+# what a connector run needs to hold the matching findings back.
+GET_ACTIVE_RISK_ACCEPTANCES = """
+    MATCH (x:RiskAcceptance {tenant_id: $tenant_id})-[:ACCEPTS_RISK_ON]->(a:Asset {tenant_id: $tenant_id})
+    WHERE x.review_by >= date()
+    RETURN a.id AS asset_id, a.name AS asset_name, x.package_name AS package_name,
+           x.package_version AS package_version, toString(x.review_by) AS review_by
 """
