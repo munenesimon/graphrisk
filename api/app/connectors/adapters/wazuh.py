@@ -578,10 +578,17 @@ class WazuhAdapter(BaseConnector):
                     for s, n in per_pkg[key].items():
                         held_acc[s] = held_acc.get(s, 0) + n
                 sev = {s: max(n - held_acc.get(s, 0), 0) for s, n in sev.items()}
-                self._accepted_summary[agent_id] = sorted(
-                    ({"name": k[0], "version": k[1], "findings": sum(per_pkg[k].values()),
-                      "review_by": accepted[package_key(*k)].get("review_by")} for k in acc_keys),
-                    key=lambda x: -x["findings"])
+                # One entry per accepted package: Windows can list one
+                # install under two slightly different names, which match
+                # the same acceptance (see package_key).
+                merged: dict[tuple[str, str], dict] = {}
+                for k in acc_keys:
+                    entry = merged.setdefault(package_key(*k), {
+                        "name": accepted[package_key(*k)].get("name") or k[0],
+                        "version": accepted[package_key(*k)].get("version") or k[1],
+                        "findings": 0, "review_by": accepted[package_key(*k)].get("review_by")})
+                    entry["findings"] += sum(per_pkg[k].values())
+                self._accepted_summary[agent_id] = sorted(merged.values(), key=lambda x: -x["findings"])
             out[agent_id] = sev
         return out
 

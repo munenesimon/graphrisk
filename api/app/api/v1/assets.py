@@ -5,6 +5,10 @@ import uuid
 from app.graph.connection import run_query, run_write
 from app.graph import queries
 from app.auth.jwt_auth import get_current_user, CurrentUser
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.db.session import get_db
+from app.db.models import User
 from app.risk_acceptance import (DEFAULT_ACCEPTANCE_MONTHS, MAX_ACCEPTANCE_MONTHS,
                                  package_key, split_accepted)
 
@@ -98,6 +102,33 @@ def _risk_acceptances(asset_id: str, tenant_id: str) -> list:
     return [r for r in rows or [] if isinstance(r, dict)]
 
 
+async def _emails(db: AsyncSession, ids) -> dict:
+    """{user id: email} for the ids that are user ids; {} on any error."""
+    wanted = set()
+    for i in ids:
+        try:
+            wanted.add(str(uuid.UUID(str(i))))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    if not wanted:
+        return {}
+    try:
+        rows = await db.execute(select(User.id, User.email).where(User.id.in_(wanted)))
+        return {str(r[0]): r[1] for r in rows.all()}
+    except Exception:
+        return {}
+
+
+async def _with_people_named(db: AsyncSession, acceptances: list) -> list:
+    """Show people by email rather than by user id."""
+    emails = await _emails(db, [a.get(k) for a in acceptances for k in ("owner", "accepted_by")])
+    for a in acceptances:
+        for k in ("owner", "accepted_by"):
+            if str(a.get(k)) in emails:
+                a[k] = emails[str(a[k])]
+    return acceptances
+
+
 def _fix_first(packages: list, vulns_by_id: dict) -> list:
     """Vulnerable software, one entry per package, with the CVEs behind it
     and whether any is known to be used in ransomware -- the "what do I
@@ -129,7 +160,8 @@ def _fix_first(packages: list, vulns_by_id: dict) -> list:
 
 
 @router.get("/{asset_id}/profile")
-async def get_asset_profile(asset_id: str, user: CurrentUser = Depends(get_current_user)):
+async def get_asset_profile(asset_id: str, user: CurrentUser = Depends(get_current_user),
+                            db: AsyncSession = Depends(get_db)):
     """
     Everything the asset page shows, from every connector that reports on
     this asset, merged into the universal device profile (see
@@ -212,7 +244,7 @@ async def get_asset_profile(asset_id: str, user: CurrentUser = Depends(get_curre
             ],
         },
         "risks": risks,
-        "risk_acceptances": acceptances,
+        "risk_acceptances": await _with_people_named(db, acceptances),
         "can_accept_risk": user.role in ACCEPTANCE_EDITORS and not is_read_only_tenant(tenant_id),
     }
 
@@ -286,14 +318,15 @@ class RiskAcceptanceIn(BaseModel):
 
 
 @router.get("/{asset_id}/risk-acceptances")
-async def list_risk_acceptances(asset_id: str, user: CurrentUser = Depends(get_current_user)):
-    rows = run_query(queries.GET_RISK_ACCEPTANCES_FOR_ASSET,
-                     {"asset_id": asset_id, "tenant_id": user.graph_tenant_id}) or []
-    return {"acceptances": rows, "can_accept": user.role in ACCEPTANCE_EDITORS}
+async def list_risk_acceptances(asset_id: str, user: CurrentUser = Depends(get_current_user),
+                                db: AsyncSession = Depends(get_db)):
+    rows = _risk_acceptances(asset_id, user.graph_tenant_id)
+    return {"acceptances": await _with_people_named(db, rows), "can_accept": user.role in ACCEPTANCE_EDITORS}
 
 
 @router.put("/{asset_id}/risk-acceptances")
-async def set_risk_acceptance(asset_id: str, body: RiskAcceptanceIn, user: CurrentUser = Depends(get_current_user)):
+async def set_risk_acceptance(asset_id: str, body: RiskAcceptanceIn, user: CurrentUser = Depends(get_current_user),
+                              db: AsyncSession = Depends(get_db)):
     """Accept the findings in one package on this device until a review date.
     Saving again (same package and version) renews it from today."""
     if user.role not in ACCEPTANCE_EDITORS:
@@ -301,10 +334,12 @@ async def set_risk_acceptance(asset_id: str, body: RiskAcceptanceIn, user: Curre
     from datetime import date
     from app.api.v1.frameworks import add_months
     review_by = add_months(date.today(), body.review_months)
+    # With no owner given, the person recording it owns it, shown by email.
+    owner = (body.owner or "").strip() or (await _emails(db, [user.user_id])).get(user.user_id) or user.user_id
     rows = run_write(queries.SET_RISK_ACCEPTANCE, {
         "tenant_id": user.graph_tenant_id, "asset_id": asset_id,
         "package_name": body.package_name.strip(), "package_version": body.package_version.strip(),
-        "reason": body.reason.strip(), "owner": (body.owner or "").strip() or user.user_id,
+        "reason": body.reason.strip(), "owner": owner,
         "accepted_by": user.user_id, "review_by": review_by.isoformat(),
     }) or []
     if not rows:

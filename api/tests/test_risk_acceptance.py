@@ -190,3 +190,47 @@ def test_asset_page_drops_accepted_packages_from_actions_straight_away(client, f
     assert [p["name"] for p in body["fix_first"]] == [SQL[0]]
     assert body["risk_acceptances"][0]["package_name"] == VBOX[0]
     assert body["can_accept_risk"] is True
+
+
+# ── People shown by email; one entry per accepted package ───────────────────
+
+async def test_owners_and_recorders_are_shown_by_email(db_session):
+    from app.api.v1.assets import _emails, _with_people_named
+    from app.db.models import Tenant, User
+    tenant = Tenant(name="Acme", graph_tenant_id="acme")
+    db_session.add(tenant)
+    await db_session.flush()
+    user = User(tenant_id=tenant.id, email="simon@example.com", hashed_password="x", role="owner")
+    db_session.add(user)
+    await db_session.commit()
+    rows = await _with_people_named(db_session, [
+        {"package_name": "X", "owner": user.id, "accepted_by": user.id},
+        {"package_name": "Y", "owner": "IT team", "accepted_by": user.id},
+    ])
+    assert rows[0]["owner"] == "simon@example.com" and rows[0]["accepted_by"] == "simon@example.com"
+    assert rows[1]["owner"] == "IT team"
+    # Names that aren't user ids are never looked up.
+    assert await _emails(db_session, ["IT team", None]) == {}
+
+
+ASPNET_A = ("Microsoft ASP.NET Core 8.0.14 - Shared Framework (x86)", "8.0.14.25112")
+ASPNET_B = ("Microsoft ASP.NET Core 8.0.14 Shared Framework (x86)", "8.0.14.25112")
+
+
+@responses.activate
+def test_two_names_for_one_accepted_package_count_once():
+    adapter = WazuhAdapter(tenant_id="t", config=_wazuh_config_with_indexer())
+    adapter.accepted_packages = {"simo": {package_key(*ASPNET_A): {
+        "name": ASPNET_A[0], "version": ASPNET_A[1], "review_by": "2027-04-22"}}}
+    with _mock_private_dns():
+        _register(INSTALLED | {ASPNET_A, ASPNET_B})
+        responses.add(responses.POST, f"{INDEXER_URL}/wazuh-states-vulnerabilities-*/_search", json={
+            "aggregations": {"by_agent": {"buckets": [{
+                "key": "001",
+                "by_severity": {"buckets": [{"key": "Critical", "doc_count": 6}]},
+                "by_package": {"buckets": [
+                    {"key": n, "by_version": {"buckets": [{"key": v, "by_severity": {"buckets": [
+                        {"key": "Critical", "doc_count": 3}]}}]}} for n, v in (ASPNET_A, ASPNET_B)]},
+            }]}}})
+        result = adapter.run_check("wazuh_vulnerability_patching")
+    assert "6 findings in 1 accepted package not counted until their review date" in result.detail
